@@ -58,7 +58,7 @@ export const getFetchClient = (config: Config): {
                         );
                     } catch (err) {
                         console.warn(
-                            `[WARN] Failed to generate IPv6 from block ${ipv6Block}. Disabling IPv6 rotation permanently.`,
+                            `[WARN] Failed to generate IPv6 from block ${ipv6Block}. Disabling IPv6 rotation permanently.\n[ERROR] ${err}`,
                         );
                         ipv6Enabled = false;
                     }
@@ -66,7 +66,7 @@ export const getFetchClient = (config: Config): {
 
                 try {
                     client = Deno.createHttpClient(clientOptions);
-                } catch (err: any) {
+                } catch (err) {
                     if (
                         clientOptions.localAddress &&
                         (err.message?.includes(

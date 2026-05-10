@@ -34,8 +34,6 @@ const InputContentTokenSchema = z.object({
     videoId: z.string(),
     requestId: z.string().uuid(),
 }).strict();
-export type InputInitialise = z.infer<typeof InputInitialiseSchema>;
-export type InputContentToken = z.infer<typeof InputContentTokenSchema>;
 const InputMessageSchema = z.union([
     InputInitialiseSchema,
     InputContentTokenSchema,

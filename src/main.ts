@@ -13,6 +13,7 @@ import { parseArgs } from "@std/cli/parse-args";
 import { existsSync } from "@std/fs/exists";
 
 import { parseConfig } from "./lib/helpers/config.ts";
+
 const config = await parseConfig();
 import { Metrics } from "./lib/helpers/metrics.ts";
 import { jsInterpreter } from "./lib/helpers/jsInterpreter.ts";
@@ -226,6 +227,7 @@ export function run(signal: AbortSignal, port: number, hostname: string) {
         );
     }
 }
+
 if (import.meta.main) {
     const controller = new AbortController();
     const { signal } = controller;

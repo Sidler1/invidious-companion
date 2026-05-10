@@ -1,4 +1,4 @@
-import { assertExists } from "jsr:@std/assert@1";
+import { assertExists } from "./deps.ts";
 import { Metrics } from "../lib/helpers/metrics.ts";
 
 Deno.test("Metrics - new counters exist and are incrementable", () => {
