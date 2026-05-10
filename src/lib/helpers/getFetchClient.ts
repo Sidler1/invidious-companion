@@ -66,15 +66,15 @@ export const getFetchClient = (config: Config): {
 
                 try {
                     client = Deno.createHttpClient(clientOptions);
-                } catch (err) {
+                } catch (err: unknown) {
                     if (
                         clientOptions.localAddress &&
-                        (err.message?.includes(
+                        (err?.toString().includes(
                             "Cannot assign requested address",
-                        ) || err.code === 99)
+                        ))
                     ) {
                         console.warn(
-                            "[WARN] IPv6 bind failed (address not available on this host). Disabling IPv6 rotation permanently.",
+                            "[WARN] IPv6 bind failed (address not available on this host). Disabling IPv6 rotation permanently.\n[ERROR] ${err}`,",
                         );
                         ipv6Enabled = false;
                         delete clientOptions.localAddress;
