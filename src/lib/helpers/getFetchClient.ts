@@ -8,6 +8,9 @@ type FetchInitParameterWithClient =
     | RequestInit & { client: Deno.HttpClient };
 type FetchReturn = ReturnType<typeof fetch>;
 
+// Module-level flag to permanently disable IPv6 rotation if it ever fails
+let ipv6Enabled = true;
+
 export const getFetchClient = (config: Config): {
     (
         input: FetchInputParameter,
@@ -29,11 +32,7 @@ export const getFetchClient = (config: Config): {
         jitter: 0,
     };
 
-    // If proxy or IPv6 rotation is configured, create a custom HTTP client
-    // IPv6 rotation generates a unique localAddress for each request to help
-    // avoid YouTube's "Please login" errors
-    if (proxyAddress || ipv6Block) {
-        // For proxy-only (no IPv6 rotation), reuse a single client
+    if (proxyAddress || (ipv6Block && ipv6Enabled)) {
         const reusableClient = proxyAddress && !ipv6Block
             ? Deno.createHttpClient({ proxy: { url: proxyAddress } })
             : undefined;
@@ -51,18 +50,22 @@ export const getFetchClient = (config: Config): {
                 if (proxyAddress) {
                     clientOptions.proxy = { url: proxyAddress };
                 }
-                if (ipv6Block) {
+
+                if (ipv6Block && ipv6Enabled) {
                     try {
                         clientOptions.localAddress = generateRandomIPv6(ipv6Block);
                     } catch (err) {
-                        console.warn(`[WARN] Failed to generate IPv6 from block ${ipv6Block}, proceeding without IPv6 rotation:`, err);
+                        console.warn(`[WARN] Failed to generate IPv6 from block ${ipv6Block}. Disabling IPv6 rotation permanently.`);
+                        ipv6Enabled = false;
                     }
                 }
+
                 try {
                     client = Deno.createHttpClient(clientOptions);
-                } catch (err) {
-                    if (clientOptions.localAddress) {
-                        console.warn("[WARN] IPv6 client creation failed (likely no IPv6 support or permission on host), falling back to non-IPv6 client. This improves robustness on systems without IPv6.", err);
+                } catch (err: any) {
+                    if (clientOptions.localAddress && (err.message?.includes("Cannot assign requested address") || err.code === 99)) {
+                        console.warn("[WARN] IPv6 bind failed (address not available on this host). Disabling IPv6 rotation permanently.");
+                        ipv6Enabled = false;
                         delete clientOptions.localAddress;
                         client = Deno.createHttpClient(clientOptions);
                     } else {
@@ -78,7 +81,6 @@ export const getFetchClient = (config: Config): {
                 body: init?.body,
             });
 
-            // If using a reusable client, return directly without closing
             if (reusableClient) {
                 return new Response(fetchRes.body, {
                     status: fetchRes.status,
@@ -86,7 +88,6 @@ export const getFetchClient = (config: Config): {
                 });
             }
 
-            // For per-request clients (IPv6 rotation), close after body is consumed
             const originalBody = fetchRes.body;
             if (!originalBody) {
                 client.close();
@@ -135,12 +136,10 @@ function fetchShim(
 
     const callFetch = () =>
         fetch(input, {
-            // only set the AbortSignal if the timeout is supplied in the config
             signal: fetchTimeout
                 ? AbortSignal.timeout(Number(fetchTimeout))
                 : null,
             ...(init || {}),
         });
-    // if retry enabled, call retry with the fetch shim, otherwise pass the fetch shim back directly
     return fetchRetry ? retry(callFetch, retryOptions) : callFetch();
 }
