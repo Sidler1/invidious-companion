@@ -1,19 +1,28 @@
-import { assertExists } from "jsr:@std/assert@1";
+import { assertExists } from "./deps.ts";
 import { Metrics } from "../lib/helpers/metrics.ts";
 
 Deno.test("Metrics - new counters exist and are incrementable", () => {
     const metrics = new Metrics();
 
     // Test gracefulShutdowns
-    assertExists(metrics.gracefulShutdowns, "gracefulShutdowns counter should exist");
+    assertExists(
+        metrics.gracefulShutdowns,
+        "gracefulShutdowns counter should exist",
+    );
     metrics.gracefulShutdowns.inc();
 
     // Test videoPlaybackRequests
-    assertExists(metrics.videoPlaybackRequests, "videoPlaybackRequests counter should exist");
+    assertExists(
+        metrics.videoPlaybackRequests,
+        "videoPlaybackRequests counter should exist",
+    );
     metrics.videoPlaybackRequests.inc();
 
     // Test poTokenGenerationSuccess
-    assertExists(metrics.poTokenGenerationSuccess, "poTokenGenerationSuccess counter should exist");
+    assertExists(
+        metrics.poTokenGenerationSuccess,
+        "poTokenGenerationSuccess counter should exist",
+    );
     metrics.poTokenGenerationSuccess.inc();
 
     // Also verify existing important counters still work
@@ -23,7 +32,9 @@ Deno.test("Metrics - new counters exist and are incrementable", () => {
 
 Deno.test("Metrics - registry contains all expected metrics", () => {
     const metrics = new Metrics();
-    const metricNames = Array.from(metrics.register.getMetricsAsArray()).map(m => m.name);
+    const metricNames = Array.from(metrics.register.getMetricsAsArray()).map(
+        (m) => m.name,
+    );
 
     const expectedNewMetrics = [
         "invidious_companion_graceful_shutdowns_total",
@@ -33,8 +44,8 @@ Deno.test("Metrics - registry contains all expected metrics", () => {
 
     for (const expected of expectedNewMetrics) {
         assertExists(
-            metricNames.find(name => name === expected),
-            `Expected metric ${expected} not found in registry`
+            metricNames.find((name) => name === expected),
+            `Expected metric ${expected} not found in registry`,
         );
     }
 });

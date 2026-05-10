@@ -1,7 +1,11 @@
 import { Hono } from "hono";
 import { companionRoutes, miscRoutes } from "./routes/index.ts";
 import { Innertube, Platform } from "youtubei.js";
-import { poTokenGenerate, type TokenMinter, cleanupWorkers } from "./lib/jobs/potoken.ts";
+import {
+    cleanupWorkers,
+    poTokenGenerate,
+    type TokenMinter,
+} from "./lib/jobs/potoken.ts";
 import { USER_AGENT } from "bgutils";
 import { retry } from "@std/async";
 import type { HonoVariables } from "./lib/types/HonoVariables.ts";
@@ -9,9 +13,10 @@ import { parseArgs } from "@std/cli/parse-args";
 import { existsSync } from "@std/fs/exists";
 
 import { parseConfig } from "./lib/helpers/config.ts";
-const config = await parseConfig();
 import { Metrics } from "./lib/helpers/metrics.ts";
 import { jsInterpreter } from "./lib/helpers/jsInterpreter.ts";
+
+const config = await parseConfig();
 
 const args = parseArgs(Deno.args);
 
@@ -191,7 +196,7 @@ export function run(signal: AbortSignal, port: number, hostname: string) {
             );
         }
 
-        const srv = Deno.serve(
+        return Deno.serve(
             {
                 onListen() {
                     Deno.chmodSync(udsPath, 0o777);
@@ -204,8 +209,6 @@ export function run(signal: AbortSignal, port: number, hostname: string) {
             },
             app.fetch,
         );
-
-        return srv;
     } else {
         return Deno.serve(
             {
@@ -222,13 +225,16 @@ export function run(signal: AbortSignal, port: number, hostname: string) {
         );
     }
 }
+
 if (import.meta.main) {
     const controller = new AbortController();
     const { signal } = controller;
     run(signal, config.server.port, config.server.host);
 
     const shutdown = (signalName: string) => {
-        console.log(`[INFO] Caught ${signalName}, initiating graceful shutdown...`);
+        console.log(
+            `[INFO] Caught ${signalName}, initiating graceful shutdown...`,
+        );
         controller.abort();
 
         // Cleanup PO token workers
@@ -238,7 +244,9 @@ if (import.meta.main) {
 
         // Optional: add a timeout for forced exit if shutdown hangs
         setTimeout(() => {
-            console.log("[WARN] Graceful shutdown timeout (10s) reached, forcing exit...");
+            console.log(
+                "[WARN] Graceful shutdown timeout (10s) reached, forcing exit...",
+            );
             Deno.exit(0);
         }, 10000);
 

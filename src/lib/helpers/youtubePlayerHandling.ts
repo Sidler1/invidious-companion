@@ -2,7 +2,7 @@ import { ApiResponse, Innertube, YT } from "youtubei.js";
 import { generateRandomString } from "youtubei.js/Utils";
 import { compress, decompress } from "brotli";
 import type { TokenMinter } from "../jobs/potoken.ts";
-import { Metrics } from "../helpers/metrics.ts";
+import { Metrics } from "./metrics.ts";
 let youtubePlayerReqLocation = "youtubePlayerReq";
 if (Deno.env.get("YT_PLAYER_REQ_LOCATION")) {
     if (Deno.env.has("DENO_COMPILED")) {
@@ -20,12 +20,9 @@ import type { Config } from "./config.ts";
 
 let kvInstance: Deno.Kv | null = null;
 
-async function getKv(config: Config): Promise<Deno.Kv> {
+async function getKv(): Promise<Deno.Kv> {
     if (!kvInstance) {
-        const dir = config.cache.directory || "/var/tmp";
-        const kvPath = `${dir}/invidious-companion.kv`;
-        kvInstance = await Deno.openKv(kvPath);
-        console.log(`[INFO] Using persistent KV store at ${kvPath}`);
+        kvInstance = await Deno.openKv();
     }
     return kvInstance;
 }
@@ -46,7 +43,7 @@ export const youtubePlayerParsing = async ({
     overrideCache?: boolean;
 }): Promise<object> => {
     const cacheEnabled = overrideCache ? false : config.cache.enabled;
-    const kv = await getKv(config);
+    const kv = await getKv();
 
     const cachedEntry = await kv.get(["video_cache", videoId]);
     const videoCached = cachedEntry.value as Uint8Array | null;
@@ -165,7 +162,7 @@ export const youtubePlayerParsing = async ({
                             compress(
                                 new TextEncoder().encode(
                                     JSON.stringify(videoOnlyNecessaryInfo),
-                            ),
+                                ),
                             ),
                             {
                                 expireIn: ttlMs,
