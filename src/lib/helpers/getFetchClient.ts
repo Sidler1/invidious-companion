@@ -53,9 +53,13 @@ export const getFetchClient = (config: Config): {
 
                 if (ipv6Block && ipv6Enabled) {
                     try {
-                        clientOptions.localAddress = generateRandomIPv6(ipv6Block);
+                        clientOptions.localAddress = generateRandomIPv6(
+                            ipv6Block,
+                        );
                     } catch (err) {
-                        console.warn(`[WARN] Failed to generate IPv6 from block ${ipv6Block}. Disabling IPv6 rotation permanently.`);
+                        console.warn(
+                            `[WARN] Failed to generate IPv6 from block ${ipv6Block}. Disabling IPv6 rotation permanently.`,
+                        );
                         ipv6Enabled = false;
                     }
                 }
@@ -63,8 +67,15 @@ export const getFetchClient = (config: Config): {
                 try {
                     client = Deno.createHttpClient(clientOptions);
                 } catch (err: any) {
-                    if (clientOptions.localAddress && (err.message?.includes("Cannot assign requested address") || err.code === 99)) {
-                        console.warn("[WARN] IPv6 bind failed (address not available on this host). Disabling IPv6 rotation permanently.");
+                    if (
+                        clientOptions.localAddress &&
+                        (err.message?.includes(
+                            "Cannot assign requested address",
+                        ) || err.code === 99)
+                    ) {
+                        console.warn(
+                            "[WARN] IPv6 bind failed (address not available on this host). Disabling IPv6 rotation permanently.",
+                        );
                         ipv6Enabled = false;
                         delete clientOptions.localAddress;
                         client = Deno.createHttpClient(clientOptions);

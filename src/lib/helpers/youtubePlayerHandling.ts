@@ -165,7 +165,7 @@ export const youtubePlayerParsing = async ({
                             compress(
                                 new TextEncoder().encode(
                                     JSON.stringify(videoOnlyNecessaryInfo),
-                            ),
+                                ),
                             ),
                             {
                                 expireIn: ttlMs,

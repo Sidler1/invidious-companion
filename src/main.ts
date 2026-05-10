@@ -1,7 +1,11 @@
 import { Hono } from "hono";
 import { companionRoutes, miscRoutes } from "./routes/index.ts";
 import { Innertube, Platform } from "youtubei.js";
-import { poTokenGenerate, type TokenMinter, cleanupWorkers } from "./lib/jobs/potoken.ts";
+import {
+    cleanupWorkers,
+    poTokenGenerate,
+    type TokenMinter,
+} from "./lib/jobs/potoken.ts";
 import { USER_AGENT } from "bgutils";
 import { retry } from "@std/async";
 import type { HonoVariables } from "./lib/types/HonoVariables.ts";
@@ -228,7 +232,9 @@ if (import.meta.main) {
     run(signal, config.server.port, config.server.host);
 
     const shutdown = (signalName: string) => {
-        console.log(`[INFO] Caught ${signalName}, initiating graceful shutdown...`);
+        console.log(
+            `[INFO] Caught ${signalName}, initiating graceful shutdown...`,
+        );
         controller.abort();
 
         // Cleanup PO token workers
@@ -238,7 +244,9 @@ if (import.meta.main) {
 
         // Optional: add a timeout for forced exit if shutdown hangs
         setTimeout(() => {
-            console.log("[WARN] Graceful shutdown timeout (10s) reached, forcing exit...");
+            console.log(
+                "[WARN] Graceful shutdown timeout (10s) reached, forcing exit...",
+            );
             Deno.exit(0);
         }, 10000);
 

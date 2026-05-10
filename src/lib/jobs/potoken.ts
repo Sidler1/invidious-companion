@@ -255,7 +255,9 @@ export function cleanupWorkers(): void {
         console.log("[INFO] No PO token workers to clean up.");
         return;
     }
-    console.log(`[INFO] Cleaning up ${workers.length} PO token worker(s) for graceful shutdown...`);
+    console.log(
+        `[INFO] Cleaning up ${workers.length} PO token worker(s) for graceful shutdown...`,
+    );
     while (workers.length > 0) {
         const worker = workers.shift();
         if (worker) {
@@ -263,7 +265,10 @@ export function cleanupWorkers(): void {
                 worker.terminate();
                 console.log("[INFO] Terminated a PO token worker.");
             } catch (err) {
-                console.error("[ERROR] Failed to terminate PO token worker:", err);
+                console.error(
+                    "[ERROR] Failed to terminate PO token worker:",
+                    err,
+                );
             }
         }
     }
