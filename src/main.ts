@@ -13,10 +13,10 @@ import { parseArgs } from "@std/cli/parse-args";
 import { existsSync } from "@std/fs/exists";
 
 import { parseConfig } from "./lib/helpers/config.ts";
-
-const config = await parseConfig();
 import { Metrics } from "./lib/helpers/metrics.ts";
 import { jsInterpreter } from "./lib/helpers/jsInterpreter.ts";
+
+const config = await parseConfig();
 
 const args = parseArgs(Deno.args);
 
@@ -196,7 +196,7 @@ export function run(signal: AbortSignal, port: number, hostname: string) {
             );
         }
 
-        const srv = Deno.serve(
+        return Deno.serve(
             {
                 onListen() {
                     Deno.chmodSync(udsPath, 0o777);
@@ -209,8 +209,6 @@ export function run(signal: AbortSignal, port: number, hostname: string) {
             },
             app.fetch,
         );
-
-        return srv;
     } else {
         return Deno.serve(
             {
