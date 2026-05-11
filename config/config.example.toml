@@ -37,6 +37,22 @@
 # # Randomizes all bits after the block prefix (e.g., /32 randomizes bits 33-128)
 # #ipv6_block = "2001:db8::/32" # env variable: NETWORKING_IPV6_BLOCK
 
+# --- MULTI-PROXY SUPPORT (NEW - Performance optimized failover!) ---
+# Use the get_good_proxies_for_companion.py script (or similar) to test and generate
+# a list of healthy proxies. Then paste the [networking.proxy_pool] section below.
+# The app will automatically rotate (round-robin or random) and swap proxies
+# if YouTube blocks one (detects 403/429 or network errors, with 5min cooldown).
+# All clients are pre-created at startup for maximum speed (zero runtime overhead).
+# [networking.proxy_pool]
+# enabled = true
+# rotation = "round-robin"   # Options: round-robin (fastest, recommended), random
+# health_check = true
+# proxies = [
+#     "http://username:password@proxy1.example.com:8080",
+#     "http://username:password@proxy2.example.com:8080",
+#     # ... add more good ones from the script
+# ]
+
 # [networking.videoplayback]
 # # Enable YouTube new video format UMP
 # ump = false # env variable: NETWORKING_VIDEOPLAYBACK_UMP
