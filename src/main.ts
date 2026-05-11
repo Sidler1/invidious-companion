@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { companionRoutes, miscRoutes } from "./routes/index.ts";
-import { Innertube, Platform } from "youtubei.js";
+import { Innertube, Platform, UniversalCache } from "youtubei.js";
 import {
     cleanupWorkers,
     poTokenGenerate,
@@ -77,6 +77,13 @@ if (!innertubeClientOauthEnabled) {
 
 Platform.shim.eval = jsInterpreter;
 
+// PERFORMANCE IMPROVEMENT: Use persistent UniversalCache for player/session data
+// This dramatically speeds up Innertube creation and the 5min cron regeneration
+// (avoids re-downloading/deciphering player JS every time)
+const cache = config.cache.enabled
+    ? new UniversalCache(true, config.cache.directory)
+    : undefined;
+
 innertubeClient = await Innertube.create({
     enable_session_cache: false,
     retrieve_player: innertubeClientFetchPlayer,
@@ -84,6 +91,7 @@ innertubeClient = await Innertube.create({
     cookie: innertubeClientCookies || undefined,
     user_agent: USER_AGENT,
     player_id: config.youtube_session.player_id,
+    cache,
 });
 
 if (!innertubeClientOauthEnabled) {
@@ -133,6 +141,7 @@ if (!innertubeClientOauthEnabled) {
                     user_agent: USER_AGENT,
                     cookie: innertubeClientCookies || undefined,
                     player_id: config.youtube_session.player_id,
+                    cache, // reuse cache for speed
                 });
             }
         },
