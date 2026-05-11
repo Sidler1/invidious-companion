@@ -48,7 +48,7 @@ export const getFetchClient = (config: Config): {
         const proxyClients = new Map<string, Deno.HttpClient>();
         const healthyProxies = new Set(proxyPool.proxies);
         const failureTimes = new Map<string, number>();
-        const COOLDOWN_MS = 300_000;
+        const COOLDOWN_MS = 3_600_000; // 1 HOUR blacklist when blocked (as requested)
 
         for (const proxyUrl of proxyPool.proxies) {
             try {
@@ -125,7 +125,7 @@ export const getFetchClient = (config: Config): {
 
                 if (isBlocked) {
                     markProxyFailure(proxyUrl);
-                    console.warn(`[WARN] Proxy blocked by YouTube (${proxyUrl}). Rotating...`);
+                    console.warn(`[WARN] Proxy blocked by YouTube (${proxyUrl}). Blacklisted for 1 hour.`);
                 }
 
                 return new Response(fetchRes.body, {
@@ -160,7 +160,7 @@ export const getFetchClient = (config: Config): {
         };
     }
 
-    // Single proxy / IPv6 path (unchanged for compatibility)
+    // Single proxy / IPv6 path (unchanged)
     if (proxyAddress || (ipv6Block && ipv6Enabled)) {
         const reusableClient = proxyAddress && !ipv6Block
             ? Deno.createHttpClient({ proxy: { url: proxyAddress } })
