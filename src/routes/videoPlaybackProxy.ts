@@ -211,7 +211,7 @@ videoPlaybackProxy.get("/", async (c) => {
 
     // Pipe strictly in byte order (fetches happened in parallel)
     for (const response of responses) {
-        await stream.pipe(response.body);
+        await stream.pipe(response.body!); // body is guaranteed non-null after 200 check
     }
     // =================== REQUEST CHUNKING =======================
 
