@@ -116,6 +116,15 @@ export const ConfigSchema = z.object({
                 ) || 5,
             ),
         }).strict().default({}),
+        // NEW: Multiple proxies support for automatic failover when YouTube blocks one.
+        // Use the provided get_good_proxies_for_companion.py script to generate healthy proxies.
+        // Performance optimized: pre-created HttpClients, fast round-robin/random selection with cooldown on failures.
+        proxy_pool: z.object({
+            enabled: z.boolean().default(false),
+            rotation: z.enum(["round-robin", "random"]).default("round-robin"),
+            health_check: z.boolean().default(true),
+            proxies: z.array(z.string()).default([]),
+        }).strict().default({}),
     }).strict().default({}),
     jobs: z.object({
         youtube_session: z.object({
