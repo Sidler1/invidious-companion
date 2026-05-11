@@ -44,7 +44,7 @@ captionsHandler.get("/:videoId", async (c) => {
             res: new Response("No check ID."),
         });
     } else if (config.server.verify_requests && check) {
-        if (verifyRequest(check, videoId, config) === false) {
+        if (await verifyRequest(check, videoId, config) === false) {
             throw new HTTPException(400, {
                 res: new Response("ID incorrect."),
             });

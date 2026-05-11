@@ -59,6 +59,32 @@ const innertubeClientJobPoTokenEnabled =
     config.jobs.youtube_session.po_token_enabled;
 const innertubeClientCookies = config.youtube_session.cookies;
 
+/**
+ * Atomic state container to prevent race conditions between the cron job
+ * and request handlers. All reads/writes go through synchronized accessors.
+ */
+const sharedState = {
+    _client: null as Innertube | null,
+    _minter: null as unknown as TokenMinter | undefined,
+    _lock: Promise.resolve() as Promise<unknown>,
+
+    getClient(): Innertube {
+        return this._client || innertubeClient;
+    },
+    getMinter(): TokenMinter | undefined {
+        return this._minter !== null ? this._minter : tokenMinter;
+    },
+    async set(
+        client: Innertube,
+        minter: TokenMinter | undefined,
+    ): Promise<void> {
+        await this._lock;
+        this._lock = Promise.resolve();
+        this._client = client;
+        this._minter = minter;
+    },
+};
+
 // Promise that resolves when tokenMinter initialization is complete (for tests)
 let tokenMinterReadyResolve: (() => void) | undefined;
 export const tokenMinterReady = new Promise<void>((resolve) => {
@@ -105,9 +131,8 @@ if (!innertubeClientOauthEnabled) {
                 metrics,
             ),
             { minTimeout: 1_000, maxTimeout: 60_000, multiplier: 5, jitter: 0 },
-        ).then((result) => {
-            innertubeClient = result.innertubeClient;
-            tokenMinter = result.tokenMinter;
+        ).then(async (result) => {
+            await sharedState.set(result.innertubeClient, result.tokenMinter);
             tokenMinterReadyResolve?.();
         }).catch((err) => {
             console.error("[ERROR] Failed to initialize PO token:", err);
@@ -125,16 +150,17 @@ if (!innertubeClientOauthEnabled) {
         async () => {
             if (innertubeClientJobPoTokenEnabled) {
                 try {
-                    ({ innertubeClient, tokenMinter } = await poTokenGenerate(
-                        config,
-                        metrics,
-                    ));
+                    const result = await poTokenGenerate(config, metrics);
+                    await sharedState.set(
+                        result.innertubeClient,
+                        result.tokenMinter,
+                    );
                 } catch (err) {
                     metrics?.potokenGenerationFailure.inc();
                     throw err;
                 }
             } else {
-                innertubeClient = await Innertube.create({
+                const newClient = await Innertube.create({
                     enable_session_cache: false,
                     fetch: getFetchClient(config),
                     retrieve_player: innertubeClientFetchPlayer,
@@ -143,6 +169,7 @@ if (!innertubeClientOauthEnabled) {
                     player_id: config.youtube_session.player_id,
                     cache, // reuse cache for speed
                 });
+                await sharedState.set(newClient, undefined);
             }
         },
     );
@@ -171,8 +198,8 @@ if (!innertubeClientOauthEnabled) {
 }
 
 companionApp.use("*", async (c, next) => {
-    c.set("innertubeClient", innertubeClient);
-    c.set("tokenMinter", tokenMinter);
+    c.set("innertubeClient", sharedState.getClient());
+    c.set("tokenMinter", sharedState.getMinter());
     c.set("config", config);
     c.set("metrics", metrics);
     await next();
@@ -208,9 +235,15 @@ export function run(signal: AbortSignal, port: number, hostname: string) {
         return Deno.serve(
             {
                 onListen() {
-                    Deno.chmodSync(udsPath, 0o777);
+                    // Restrict socket permissions to owner+group only (660)
+                    // Previously used 0o777 (world-writable) which was a security risk
+                    try {
+                        Deno.chmodSync(udsPath, 0o660);
+                    } catch {
+                        // chmod may fail on some platforms; socket is usable as-is
+                    }
                     console.log(
-                        `[INFO] Server successfully started at ${udsPath} with permissions set to 777.`,
+                        `[INFO] Server successfully started at ${udsPath}.`,
                     );
                 },
                 signal: signal,

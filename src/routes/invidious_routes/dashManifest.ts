@@ -42,7 +42,7 @@ dashManifest.get("/:videoId", async (c) => {
             res: new Response("No check ID."),
         });
     } else if (config.server.verify_requests && check) {
-        if (verifyRequest(check, videoId, config) === false) {
+        if (await verifyRequest(check, videoId, config) === false) {
             throw new HTTPException(400, {
                 res: new Response("ID incorrect."),
             });
@@ -62,8 +62,12 @@ dashManifest.get("/:videoId", async (c) => {
     );
 
     if (videoInfo.playability_status?.status !== "OK") {
-        throw ("The video can't be played: " + videoId + " due to reason: " +
-            videoInfo.playability_status?.reason);
+        throw new HTTPException(403, {
+            res: new Response(
+                "The video can't be played: " + videoId + " due to reason: " +
+                    videoInfo.playability_status?.reason,
+            ),
+        });
     }
 
     c.header("content-type", "application/dash+xml");
@@ -82,7 +86,7 @@ dashManifest.get("/:videoId", async (c) => {
         const dashFile = await FormatUtils.toDash(
             videoInfo.streaming_data,
             videoInfo.page[0].video_details?.is_post_live_dvr,
-            (url: URL) => {
+            async (url: URL) => {
                 let dashUrl = url;
                 const queryParams = new URLSearchParams(dashUrl.search);
                 // Can't create URL type without host part
@@ -98,7 +102,7 @@ dashManifest.get("/:videoId", async (c) => {
                         const privateParams = [...queryParams].filter(([key]) =>
                             PRIVATE_PARAM_NAMES.includes(key)
                         );
-                        const encryptedParams = encryptQuery(
+                        const encryptedParams = await encryptQuery(
                             JSON.stringify(privateParams),
                             config,
                         );
