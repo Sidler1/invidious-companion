@@ -239,7 +239,8 @@ videoPlaybackProxy.get("/", async (c) => {
             }`;
         } else {
             const bytesReceived = headersForResponse["content-length"];
-            const totalContentLength = Number(firstByte) + Number(bytesReceived);
+            const totalContentLength = Number(firstByte) +
+                Number(bytesReceived);
             const lastByte = totalContentLength - 1;
             if (firstByte !== "0") {
                 responseStatus = 206;

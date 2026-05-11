@@ -141,7 +141,7 @@ if (!innertubeClientOauthEnabled) {
                     user_agent: USER_AGENT,
                     cookie: innertubeClientCookies || undefined,
                     player_id: config.youtube_session.player_id,
-                    cache,  // reuse cache for speed
+                    cache, // reuse cache for speed
                 });
             }
         },

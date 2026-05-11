@@ -35,7 +35,9 @@ Deno.test("proxy_pool config parsing - enabled with proxies", () => {
 Deno.test({
     name: "getFetchClient with proxy_pool - basic creation (no real network)",
     fn: async () => {
-        const { getFetchClient } = await import("../lib/helpers/getFetchClient.ts");
+        const { getFetchClient } = await import(
+            "../lib/helpers/getFetchClient.ts"
+        );
         const { parseConfig } = await import("../lib/helpers/config.ts");
 
         const config = await parseConfig();

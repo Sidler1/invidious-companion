@@ -42,7 +42,7 @@ export const getFetchClient = (config: Config): {
     };
 
     // NEW: Multi-proxy pool support (highest priority for failover when YouTube blocks a proxy)
-    // Performance-first design: 
+    // Performance-first design:
     // - Pre-create ALL HttpClients at startup (zero per-request creation cost)
     // - O(1) average selection for round-robin/random
     // - Passive health checks with 5min cooldown (no active pings, max speed)
@@ -61,7 +61,9 @@ export const getFetchClient = (config: Config): {
                     Deno.createHttpClient({ proxy: { url: proxyUrl } }),
                 );
             } catch (e) {
-                console.warn(`[WARN] Failed to init proxy client for ${proxyUrl}: ${e}`);
+                console.warn(
+                    `[WARN] Failed to init proxy client for ${proxyUrl}: ${e}`,
+                );
                 healthyProxies.delete(proxyUrl);
             }
         }
@@ -72,7 +74,9 @@ export const getFetchClient = (config: Config): {
             if (healthyProxies.size === 0) return null;
             const candidates = Array.from(healthyProxies);
             if (proxyPool.rotation === "random") {
-                return candidates[Math.floor(Math.random() * candidates.length)];
+                return candidates[
+                    Math.floor(Math.random() * candidates.length)
+                ];
             }
             // Round-robin preferring healthy (skip in-cooldown)
             for (let i = 0; i < candidates.length; i++) {
@@ -113,14 +117,21 @@ export const getFetchClient = (config: Config): {
                 );
 
                 // Fast block detection (status + lightweight body check for YouTube-specific signals)
-                let isBlocked = fetchRes.status === 403 || fetchRes.status === 429;
+                let isBlocked = fetchRes.status === 403 ||
+                    fetchRes.status === 429;
                 if (!isBlocked && fetchRes.body) {
                     // Only peek at small prefix for perf (non-destructive)
                     const reader = fetchRes.body.getReader();
                     const { value } = await reader.read();
                     if (value) {
-                        const text = new TextDecoder().decode(value.slice(0, 50000)).toLowerCase();
-                        if (YOUTUBE_BLOCK_PHRASES.some(phrase => text.includes(phrase))) {
+                        const text = new TextDecoder().decode(
+                            value.slice(0, 50000),
+                        ).toLowerCase();
+                        if (
+                            YOUTUBE_BLOCK_PHRASES.some((phrase) =>
+                                text.includes(phrase)
+                            )
+                        ) {
                             isBlocked = true;
                         }
                     }
@@ -141,7 +152,10 @@ export const getFetchClient = (config: Config): {
                 markProxyFailure(proxyUrl);
                 // Lightning fast failover (1 retry max to preserve perf)
                 const nextProxy = getNextProxy();
-                if (nextProxy && nextProxy !== proxyUrl && proxyClients.has(nextProxy)) {
+                if (
+                    nextProxy && nextProxy !== proxyUrl &&
+                    proxyClients.has(nextProxy)
+                ) {
                     const nextClient = proxyClients.get(nextProxy)!;
                     try {
                         const retryRes = await fetchShim(
