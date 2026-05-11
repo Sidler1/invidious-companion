@@ -1,4 +1,5 @@
 import { assertEquals, assertExists } from "./deps.ts";
+import { parseConfig } from "../lib/helpers/config.ts";
 
 // We test the new proxy_pool config schema and basic behavior
 
@@ -32,7 +33,6 @@ Deno.test("proxy_pool config parsing - enabled with proxies", () => {
 
 Deno.test("getFetchClient with proxy_pool - basic creation (no real network)", async () => {
     const { getFetchClient } = await import("../lib/helpers/getFetchClient.ts");
-    const { parseConfig } = await import("../lib/helpers/config.ts");
 
     const config = await parseConfig();
 
