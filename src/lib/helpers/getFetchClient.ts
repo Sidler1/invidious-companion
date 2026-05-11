@@ -239,21 +239,38 @@ export const getFetchClient = (config: Config): FetchFn => {
 /**
  * Check if a YouTube response contains bot detection signals.
  *
- * Checks 403/429 responses for block signals in the body.
- * For 200 responses, only checks text-based content types (JSON, HTML)
- * to avoid buffering large binary video streams into memory.
+ * IMPORTANT: Only checks API/HTML responses (JSON, HTML, text content types).
+ * Video CDN responses (video/mp4, application/octet-stream) are NEVER checked
+ * because:
+ * 1. YouTube's CDN legitimately returns 403 for unsupported request patterns
+ *    (e.g., expired URLs, invalid ranges) — these are NOT bot blocks
+ * 2. Reading video response bodies would buffer entire videos into memory (OOM)
+ * 3. Treating video CDN 403s as bot blocks would falsely blacklist proxies
  *
- * Uses response.clone() to peek at the body without consuming the original,
- * so the caller can still read the response stream normally.
+ * For 403/429 on API responses: checks the body for known block signals.
+ * For 200 on API responses: checks for block messages in the JSON body
+ * (e.g., "protect our community" in playabilityStatus).
  *
- * Returns true if a block signal is detected, false otherwise.
+ * Returns true if a bot block signal is detected, false otherwise.
  */
 async function checkYouTubeBlock(response: Response): Promise<boolean> {
-    // Fast path: 403/429 status codes almost always indicate blocks
+    // Only check text-based content types (API responses, HTML pages).
+    // Skip binary content (video streams, media files) entirely —
+    // a 403 on a video stream is NOT a bot block, it's a CDN error.
+    const contentType = (response.headers.get("content-type") || "")
+        .toLowerCase();
+    const isTextContent = contentType.includes("json") ||
+        contentType.includes("html") ||
+        contentType.includes("text");
+
+    if (!isTextContent) {
+        return false;
+    }
+
+    // 403/429 on API responses — almost always indicates a bot block
     if (response.status === 403 || response.status === 429) {
         try {
             const cloned = response.clone();
-            // Only read first 8KB — block messages are always near the top
             const reader = cloned.body?.getReader();
             if (reader) {
                 const { value } = await reader.read();
@@ -272,42 +289,26 @@ async function checkYouTubeBlock(response: Response): Promise<boolean> {
         return true;
     }
 
-    // YouTube also returns 200 OK with block messages in the response body
+    // YouTube also returns 200 OK with block messages in JSON API responses
     // (especially for Innertube API calls that return playabilityStatus errors).
     // This is the case for the "This helps protect our community" message.
-    //
-    // IMPORTANT: Only check text-based content types. Video streams (video/mp4,
-    // application/octet-stream, etc.) can be hundreds of MB — reading them via
-    // clone().text() would buffer the entire video into memory (OOM risk).
     if (response.status === 200) {
-        const contentType = (response.headers.get("content-type") || "")
-            .toLowerCase();
-        const isTextContent = contentType.includes("json") ||
-            contentType.includes("html") ||
-            contentType.includes("text");
-
-        if (isTextContent) {
-            try {
-                const cloned = response.clone();
-                // Only read first 8KB — block signals are always near the start
-                const reader = cloned.body?.getReader();
-                if (reader) {
-                    const { value } = await reader.read();
-                    reader.releaseLock();
-                    if (value) {
-                        const text = new TextDecoder().decode(
-                            value.slice(0, 8192),
-                        ).toLowerCase();
-                        if (
-                            YOUTUBE_BLOCK_SIGNALS.some((s) => text.includes(s))
-                        ) {
-                            return true;
-                        }
+        try {
+            const cloned = response.clone();
+            const reader = cloned.body?.getReader();
+            if (reader) {
+                const { value } = await reader.read();
+                reader.releaseLock();
+                if (value) {
+                    const text = new TextDecoder().decode(value.slice(0, 8192))
+                        .toLowerCase();
+                    if (YOUTUBE_BLOCK_SIGNALS.some((s) => text.includes(s))) {
+                        return true;
                     }
                 }
-            } catch {
-                // Can't read body — assume not blocked
             }
+        } catch {
+            // Can't read body — assume not blocked
         }
     }
 

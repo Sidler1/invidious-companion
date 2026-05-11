@@ -29,16 +29,20 @@ videoPlaybackProxy.options("/", () => {
 });
 
 /**
- * Streaming video playback proxy with bounded concurrency.
+ * Streaming video playback proxy.
  *
- * Key improvements:
- * 1. Client Range headers are properly passed through to YouTube
- * 2. Chunked fetching uses HTTP Range headers (not YouTube's `range` query param)
- *    — YouTube's CDN rejects chunked requests that only use the `range` query param
- * 3. Bounded concurrent fetch with semaphore — only MAX_CONCURRENT chunks in flight
- * 4. Each chunk is piped to the client immediately after fetch (not held in memory)
- * 5. Correct HTTP status codes: 206 for range requests, 200 for full requests
- * 6. Memory-bounded: only MAX_CONCURRENT chunk buffers in memory regardless of video size
+ * Proxies video content from YouTube's CDN to the client with proper
+ * Range header passthrough for seeking support.
+ *
+ * Design decisions:
+ * - NO chunked fetching: YouTube's videoplayback CDN rejects multiple
+ *   parallel byte-range requests to the same URL (returns 403). A single
+ *   streaming request with ReadableStream piping is both simpler and
+ *   more reliable. Backpressure from the pipe ensures memory stays bounded.
+ * - Range header passthrough: When the client sends a Range header (seeking),
+ *   it's forwarded to YouTube and YouTube's 206 response is returned as-is.
+ * - Direct streaming for full requests: For full video requests, we stream
+ *   the entire response body directly — no buffering, no chunking.
  */
 videoPlaybackProxy.get("/", async (c) => {
     const { host, c: client, expire } = c.req.query();
@@ -84,179 +88,50 @@ videoPlaybackProxy.get("/", async (c) => {
             : "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
     };
 
-    // getFetchClient is now a singleton — returns the same cached fetch function
+    // getFetchClient is a singleton — returns the same cached fetch function
     // with shared proxy pool state, health tracking, and round-robin index.
     const fetchClient = getFetchClient(config);
     const location = `https://${host}/videoplayback?${queryParams.toString()}`;
 
-    // If client sent a Range request, pass it through directly to YouTube
-    // and return YouTube's response as-is (no chunking needed for range requests)
+    // If client sent a Range request (seeking), pass it through directly to YouTube
+    // and return YouTube's 206 Partial Content response as-is.
     const rangeHeader = c.req.header("range");
+    const requestHeaders: Record<string, string> = { ...headersToSend };
     if (rangeHeader) {
-        const rangeRes = await fetchClient(location, {
-            method: "GET",
-            headers: { ...headersToSend, "Range": rangeHeader },
-            redirect: "manual",
-        });
-
-        return new Response(rangeRes.body, {
-            status: rangeRes.status,
-            headers: {
-                "content-type": rangeRes.headers.get("content-type") ||
-                    "video/mp4",
-                "content-range": rangeRes.headers.get("content-range") || "",
-                "content-length": rangeRes.headers.get("content-length") || "",
-                "accept-ranges": "bytes",
-                "access-control-allow-origin": "*",
-            },
-        });
+        requestHeaders["Range"] = rangeHeader;
     }
 
-    // Full video request — use HEAD to get metadata, then stream with bounded concurrency
-    const headRes = await fetchClient(location, {
-        method: "HEAD",
-        headers: headersToSend,
+    const ytRes = await fetchClient(location, {
+        method: "GET",
+        headers: requestHeaders,
         redirect: "manual",
     });
 
-    if (headRes.status !== 200 && headRes.status !== 206) {
-        return new Response(headRes.body, { status: headRes.status });
+    // Build response headers — pass through content-type, content-length,
+    // content-range for proper seeking support
+    const responseHeaders: Record<string, string> = {
+        "content-type": ytRes.headers.get("content-type") || "video/mp4",
+        "accept-ranges": "bytes",
+        "access-control-allow-origin": "*",
+    };
+
+    // Pass through content-length when available
+    const contentLength = ytRes.headers.get("content-length");
+    if (contentLength) {
+        responseHeaders["content-length"] = contentLength;
     }
 
-    const totalBytes = Number(headRes.headers.get("Content-Length") || "0");
-    const chunkSize =
-        config.networking.videoplayback.video_fetch_chunk_size_mb * 1_000_000;
-
-    // For small files or unknown size, just stream directly without chunking
-    if (totalBytes === 0 || totalBytes <= chunkSize) {
-        const directRes = await fetchClient(location, {
-            method: "GET",
-            headers: headersToSend,
-            redirect: "manual",
-        });
-
-        return new Response(directRes.body, {
-            status: directRes.status,
-            headers: {
-                "content-type": directRes.headers.get("content-type") ||
-                    "video/mp4",
-                "content-length": directRes.headers.get("content-length") || "",
-                "accept-ranges": "bytes",
-                "access-control-allow-origin": "*",
-            },
-        });
-    }
-
-    // Large file: stream with bounded concurrent chunked fetching using
-    // HTTP Range headers. We use the standard Range header instead of
-    // YouTube's `range` query parameter because YouTube's CDN now rejects
-    // chunked requests that only use the query param without a matching
-    // Range HTTP header (returns 403).
-    const MAX_CONCURRENT = 6;
-    const contentType = headRes.headers.get("content-type") || "video/mp4";
-
-    // Build ordered list of chunk ranges
-    const chunks: { start: number; end: number }[] = [];
-    for (let start = 0; start < totalBytes; start += chunkSize) {
-        const end = Math.min(start + chunkSize - 1, totalBytes - 1);
-        chunks.push({ start, end });
-    }
-
-    // Streaming pipeline: fetch chunks in order with bounded concurrency,
-    // pipe each chunk's body to the client immediately
-    const { readable, writable } = new TransformStream();
-    const writer = writable.getWriter();
-
-    // Run streaming in background — errors close the stream
-    (async () => {
-        try {
-            // Semaphore for bounded concurrency
-            let activeCount = 0;
-            const waitQueue: (() => void)[] = [];
-
-            const acquire = (): Promise<void> => {
-                if (activeCount < MAX_CONCURRENT) {
-                    activeCount++;
-                    return Promise.resolve();
-                }
-                return new Promise<void>((resolve) => waitQueue.push(resolve));
-            };
-
-            const release = () => {
-                activeCount--;
-                const next = waitQueue.shift();
-                if (next) {
-                    activeCount++;
-                    next();
-                }
-            };
-
-            // Process chunks sequentially in order, but allow concurrent fetches
-            // by starting the next fetch while the current one is still piping
-            for (const chunk of chunks) {
-                await acquire();
-                try {
-                    // Use HTTP Range header (standard) instead of `range` query parameter.
-                    // YouTube's CDN requires the Range header for chunked downloads —
-                    // using only the `range` query param results in 403 Forbidden.
-                    const res = await fetchClient(location, {
-                        method: "GET",
-                        headers: {
-                            ...headersToSend,
-                            "Range": `bytes=${chunk.start}-${chunk.end}`,
-                        },
-                        redirect: "manual",
-                    });
-
-                    if (res.status !== 200 && res.status !== 206) {
-                        throw new Error(
-                            `Chunk ${chunk.start}-${chunk.end} failed with status ${res.status}`,
-                        );
-                    }
-
-                    // Pipe this chunk's body directly to the writer
-                    if (res.body) {
-                        const reader = res.body.getReader();
-                        try {
-                            while (true) {
-                                const { done, value } = await reader.read();
-                                if (done) break;
-                                await writer.write(value);
-                            }
-                        } finally {
-                            reader.releaseLock();
-                        }
-                    }
-                } catch (err) {
-                    console.error(
-                        `[ERROR] Chunk ${chunk.start}-${chunk.end} failed:`,
-                        err,
-                    );
-                    throw err;
-                } finally {
-                    release();
-                }
-            }
-
-            await writer.close();
-        } catch (err) {
-            console.warn("[WARN] Streaming pipeline failed:", err);
-            try {
-                await writer.abort(err);
-            } catch {
-                // Writer may already be closed
-            }
+    // Pass through content-range for partial content responses (seeking)
+    if (ytRes.status === 206) {
+        const contentRange = ytRes.headers.get("content-range");
+        if (contentRange) {
+            responseHeaders["content-range"] = contentRange;
         }
-    })();
+    }
 
-    return new Response(readable, {
-        status: 200,
-        headers: {
-            "content-type": contentType,
-            "content-length": String(totalBytes),
-            "accept-ranges": "bytes",
-            "access-control-allow-origin": "*",
-        },
+    return new Response(ytRes.body, {
+        status: ytRes.status,
+        headers: responseHeaders,
     });
 });
 
