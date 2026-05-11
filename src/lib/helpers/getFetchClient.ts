@@ -238,8 +238,10 @@ export const getFetchClient = (config: Config): FetchFn => {
 
 /**
  * Check if a YouTube response contains bot detection signals.
- * Works on both 403/429 responses AND 200 responses that contain
- * "protect our community" or similar block messages in the body.
+ *
+ * Checks 403/429 responses for block signals in the body.
+ * For 200 responses, only checks text-based content types (JSON, HTML)
+ * to avoid buffering large binary video streams into memory.
  *
  * Uses response.clone() to peek at the body without consuming the original,
  * so the caller can still read the response stream normally.
@@ -249,15 +251,20 @@ export const getFetchClient = (config: Config): FetchFn => {
 async function checkYouTubeBlock(response: Response): Promise<boolean> {
     // Fast path: 403/429 status codes almost always indicate blocks
     if (response.status === 403 || response.status === 429) {
-        // Additionally check the body for known YouTube block signals.
-        // YouTube sometimes returns 403 with an HTML page containing
-        // "protect our community" instead of a proper API error.
         try {
             const cloned = response.clone();
-            const bodyText = await cloned.text();
-            const lowerBody = bodyText.slice(0, 60000).toLowerCase();
-            if (YOUTUBE_BLOCK_SIGNALS.some((s) => lowerBody.includes(s))) {
-                return true;
+            // Only read first 8KB — block messages are always near the top
+            const reader = cloned.body?.getReader();
+            if (reader) {
+                const { value } = await reader.read();
+                reader.releaseLock();
+                if (value) {
+                    const text = new TextDecoder().decode(value.slice(0, 8192))
+                        .toLowerCase();
+                    if (YOUTUBE_BLOCK_SIGNALS.some((s) => text.includes(s))) {
+                        return true;
+                    }
+                }
             }
         } catch {
             // Can't read body — fall back to status-based detection
@@ -268,16 +275,39 @@ async function checkYouTubeBlock(response: Response): Promise<boolean> {
     // YouTube also returns 200 OK with block messages in the response body
     // (especially for Innertube API calls that return playabilityStatus errors).
     // This is the case for the "This helps protect our community" message.
+    //
+    // IMPORTANT: Only check text-based content types. Video streams (video/mp4,
+    // application/octet-stream, etc.) can be hundreds of MB — reading them via
+    // clone().text() would buffer the entire video into memory (OOM risk).
     if (response.status === 200) {
-        try {
-            const cloned = response.clone();
-            const bodyText = await cloned.text();
-            const lowerBody = bodyText.slice(0, 60000).toLowerCase();
-            if (YOUTUBE_BLOCK_SIGNALS.some((s) => lowerBody.includes(s))) {
-                return true;
+        const contentType = (response.headers.get("content-type") || "")
+            .toLowerCase();
+        const isTextContent = contentType.includes("json") ||
+            contentType.includes("html") ||
+            contentType.includes("text");
+
+        if (isTextContent) {
+            try {
+                const cloned = response.clone();
+                // Only read first 8KB — block signals are always near the start
+                const reader = cloned.body?.getReader();
+                if (reader) {
+                    const { value } = await reader.read();
+                    reader.releaseLock();
+                    if (value) {
+                        const text = new TextDecoder().decode(
+                            value.slice(0, 8192),
+                        ).toLowerCase();
+                        if (
+                            YOUTUBE_BLOCK_SIGNALS.some((s) => text.includes(s))
+                        ) {
+                            return true;
+                        }
+                    }
+                }
+            } catch {
+                // Can't read body — assume not blocked
             }
-        } catch {
-            // Can't read body — assume not blocked
         }
     }
 
