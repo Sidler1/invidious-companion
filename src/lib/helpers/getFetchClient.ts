@@ -8,18 +8,13 @@ type FetchInitParameterWithClient =
     | RequestInit & { client: Deno.HttpClient };
 type FetchReturn = ReturnType<typeof fetch>;
 
-// Module-level flag to permanently disable IPv6 rotation if it ever fails
 let ipv6Enabled = true;
 
-// Known YouTube block / bot detection signals (expanded for better detection)
 const YOUTUBE_BLOCK_SIGNALS = [
     "unusual traffic",
     "protect our community",
     "please sign in to confirm you're not a bot",
     "captcha",
-    "sorry",
-    "we're sorry",
-    "something went wrong",
 ];
 
 export const getFetchClient = (config: Config): {
@@ -47,8 +42,10 @@ export const getFetchClient = (config: Config): {
     if (proxyPool?.enabled && proxyPool.proxies.length > 0) {
         const proxyClients = new Map<string, Deno.HttpClient>();
         const healthyProxies = new Set(proxyPool.proxies);
-        const failureTimes = new Map<string, number>();
-        const COOLDOWN_MS = 3_600_000; // 1 HOUR blacklist when blocked
+        const failureCounts = new Map<string, number>();
+        const lastBlacklistTime = new Map<string, number>();
+        const FAILURE_THRESHOLD = 3;
+        const BLACKLIST_MS = 3_600_000; // 1 hour
 
         for (const proxyUrl of proxyPool.proxies) {
             try {
@@ -58,7 +55,7 @@ export const getFetchClient = (config: Config): {
                 );
             } catch (e) {
                 console.warn(
-                    `[WARN] Failed to init proxy client for ${proxyUrl}: ${e}`,
+                    `[WARN] Failed to init proxy: ${proxyUrl}\n[ERROR] ${e}`,
                 );
                 healthyProxies.delete(proxyUrl);
             }
@@ -77,20 +74,31 @@ export const getFetchClient = (config: Config): {
             for (let i = 0; i < candidates.length; i++) {
                 const idx = (rrIndex + i) % candidates.length;
                 const p = candidates[idx];
-                const lastFail = failureTimes.get(p) || 0;
-                if (Date.now() - lastFail > COOLDOWN_MS) {
+                const lastBlacklist = lastBlacklistTime.get(p) || 0;
+                if (Date.now() - lastBlacklist > BLACKLIST_MS) {
                     rrIndex = (idx + 1) % candidates.length;
                     return p;
                 }
             }
-            rrIndex = (rrIndex + 1) % candidates.length;
             return candidates[0];
         };
 
         const markProxyFailure = (proxyUrl: string) => {
-            if (proxyPool.health_check) {
-                failureTimes.set(proxyUrl, Date.now());
+            if (!proxyPool.health_check) return;
+            const count = (failureCounts.get(proxyUrl) || 0) + 1;
+            failureCounts.set(proxyUrl, count);
+
+            if (count >= FAILURE_THRESHOLD) {
+                console.warn(
+                    `[BLACKLIST] Proxy blacklisted for 1h: ${proxyUrl} (after ${count} failures)`,
+                );
+                healthyProxies.delete(proxyUrl);
+                lastBlacklistTime.set(proxyUrl, Date.now());
             }
+        };
+
+        const markProxySuccess = (proxyUrl: string) => {
+            failureCounts.set(proxyUrl, 0);
         };
 
         return async (input: FetchInputParameter, init?: RequestInit) => {
@@ -98,35 +106,26 @@ export const getFetchClient = (config: Config): {
             const client = proxyClients.get(proxyUrl)!;
 
             try {
-                const fetchRes = await fetchShim(
-                    config,
-                    retryOptions,
-                    input,
-                    {
-                        client,
-                        headers: init?.headers,
-                        method: init?.method,
-                        body: init?.body,
-                    },
-                );
+                const fetchRes = await fetchShim(config, retryOptions, input, {
+                    client,
+                    headers: init?.headers,
+                    method: init?.method,
+                    body: init?.body,
+                });
 
-                // === IMPROVED BLOCK DETECTION ===
                 let isBlocked = fetchRes.status === 403 ||
                     fetchRes.status === 429;
 
-                if (fetchRes.body) {
+                // Only check body on non-200 responses (more conservative)
+                if (isBlocked && fetchRes.body) {
                     const reader = fetchRes.body.getReader();
                     const { value } = await reader.read();
-
                     if (value) {
                         const text = new TextDecoder().decode(
-                            value.slice(0, 80000),
+                            value.slice(0, 60000),
                         ).toLowerCase();
-
                         if (
-                            YOUTUBE_BLOCK_SIGNALS.some((signal) =>
-                                text.includes(signal)
-                            )
+                            YOUTUBE_BLOCK_SIGNALS.some((s) => text.includes(s))
                         ) {
                             isBlocked = true;
                         }
@@ -135,139 +134,51 @@ export const getFetchClient = (config: Config): {
 
                 if (isBlocked) {
                     markProxyFailure(proxyUrl);
-                    console.warn(
-                        `[WARN] Proxy blocked by YouTube (${proxyUrl}). Blacklisted for 1 hour.`,
-                    );
+                } else {
+                    markProxySuccess(proxyUrl);
                 }
 
                 return new Response(fetchRes.body, {
                     status: fetchRes.status,
                     headers: fetchRes.headers,
                 });
-            } catch {
+            } catch (e) {
                 markProxyFailure(proxyUrl);
-                const nextProxy = getNextProxy();
-                if (
-                    nextProxy && nextProxy !== proxyUrl &&
-                    proxyClients.has(nextProxy)
-                ) {
-                    const nextClient = proxyClients.get(nextProxy)!;
-                    try {
-                        const retryRes = await fetchShim(
-                            config,
-                            retryOptions,
-                            input,
-                            {
-                                client: nextClient,
-                                headers: init?.headers,
-                                method: init?.method,
-                                body: init?.body,
-                            },
-                        );
-                        return new Response(retryRes.body, {
-                            status: retryRes.status,
-                            headers: retryRes.headers,
-                        });
-                    } catch { /* ignore failover error */ }
-                }
-                throw new Error("Proxy request failed after failover");
+                throw e;
             }
         };
     }
 
-    // Single proxy / IPv6 path
+    // Single proxy / IPv6 path (unchanged)
     if (proxyAddress || (ipv6Block && ipv6Enabled)) {
         const reusableClient = proxyAddress && !ipv6Block
             ? Deno.createHttpClient({ proxy: { url: proxyAddress } })
             : undefined;
 
-        return async (
-            input: FetchInputParameter,
-            init?: RequestInit,
-        ) => {
+        return async (input: FetchInputParameter, init?: RequestInit) => {
             let client: Deno.HttpClient;
-
             if (reusableClient) {
                 client = reusableClient;
             } else {
                 const clientOptions: Deno.CreateHttpClientOptions = {};
-                if (proxyAddress) {
-                    clientOptions.proxy = { url: proxyAddress };
-                }
-
+                if (proxyAddress) clientOptions.proxy = { url: proxyAddress };
                 if (ipv6Block && ipv6Enabled) {
                     try {
                         clientOptions.localAddress = generateRandomIPv6(
                             ipv6Block,
                         );
-                    } catch (_err) {
-                        console.warn(
-                            `[WARN] Failed to generate IPv6. Disabling rotation.`,
-                        );
+                    } catch {
                         ipv6Enabled = false;
                     }
                 }
-
-                try {
-                    client = Deno.createHttpClient(clientOptions);
-                } catch (err: unknown) {
-                    if (
-                        clientOptions.localAddress &&
-                        err?.toString().includes(
-                            "Cannot assign requested address",
-                        )
-                    ) {
-                        console.warn(
-                            "[WARN] IPv6 bind failed. Disabling rotation.",
-                        );
-                        ipv6Enabled = false;
-                        delete clientOptions.localAddress;
-                        client = Deno.createHttpClient(clientOptions);
-                    } else {
-                        throw err;
-                    }
-                }
+                client = Deno.createHttpClient(clientOptions);
             }
 
             const fetchRes = await fetchShim(config, retryOptions, input, {
                 client,
                 ...init,
             });
-
-            if (reusableClient) {
-                return new Response(fetchRes.body, {
-                    status: fetchRes.status,
-                    headers: fetchRes.headers,
-                });
-            }
-
-            const originalBody = fetchRes.body;
-            if (!originalBody) {
-                client.close();
-                return new Response(null, {
-                    status: fetchRes.status,
-                    headers: fetchRes.headers,
-                });
-            }
-
-            const reader = originalBody.getReader();
-            const wrappedBody = new ReadableStream({
-                async pull(controller) {
-                    const { done, value } = await reader.read();
-                    if (done) {
-                        controller.close();
-                        client.close();
-                        return;
-                    }
-                    controller.enqueue(value);
-                },
-                cancel() {
-                    reader.cancel();
-                    client.close();
-                },
-            });
-
-            return new Response(wrappedBody, {
+            return new Response(fetchRes.body, {
                 status: fetchRes.status,
                 headers: fetchRes.headers,
             });
@@ -286,7 +197,6 @@ function fetchShim(
 ): FetchReturn {
     const fetchTimeout = config.networking.fetch?.timeout_ms;
     const fetchRetry = config.networking.fetch?.retry?.enabled;
-
     const callFetch = () =>
         fetch(input, {
             signal: fetchTimeout
@@ -294,6 +204,5 @@ function fetchShim(
                 : null,
             ...(init || {}),
         });
-
     return fetchRetry ? retry(callFetch, retryOptions) : callFetch();
 }
