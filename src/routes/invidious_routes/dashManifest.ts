@@ -83,10 +83,40 @@ dashManifest.get("/:videoId", async (c) => {
         //const storyboards = player_response.storyboards;
         const captions = player_response.captions?.caption_tracks;
 
+        // Pre-encrypt private query params BEFORE calling FormatUtils.toDash().
+        // FormatUtils.toDash() requires a SYNCHRONOUS callback (url: URL) => URL.
+        // It does NOT await the callback, so an async callback would produce
+        // "[object Promise]" in the URL path — causing 400 errors like:
+        //   GET /companion/api/manifest/dash/id/[object%20Promise]?local=true
+        //
+        // Since `pot` and `ip` are session-level parameters (same across all
+        // format URLs for a given video), we extract them from the first format
+        // URL and pre-compute the encryption.
+        let preEncryptedParams: string | null = null;
+
+        if (local && config.server.encrypt_query_params) {
+            const firstFormatUrl =
+                videoInfo.streaming_data.adaptive_formats[0]?.url ||
+                videoInfo.streaming_data.formats[0]?.url;
+
+            if (firstFormatUrl) {
+                const firstUrlParams = new URL(firstFormatUrl).searchParams;
+                const privateParams = [...firstUrlParams.entries()].filter(
+                    ([key]) => PRIVATE_PARAM_NAMES.includes(key),
+                );
+                if (privateParams.length > 0) {
+                    preEncryptedParams = await encryptQuery(
+                        JSON.stringify(privateParams),
+                        config,
+                    );
+                }
+            }
+        }
+
         const dashFile = await FormatUtils.toDash(
             videoInfo.streaming_data,
             videoInfo.page[0].video_details?.is_post_live_dvr,
-            async (url: URL) => {
+            (url: URL) => {
                 let dashUrl = url;
                 const queryParams = new URLSearchParams(dashUrl.search);
                 // Can't create URL type without host part
@@ -96,23 +126,13 @@ dashManifest.get("/:videoId", async (c) => {
                     if (config.networking.videoplayback.ump) {
                         queryParams.set("ump", "yes");
                     }
-                    if (
-                        config.server.encrypt_query_params
-                    ) {
-                        const privateParams = [...queryParams].filter(([key]) =>
-                            PRIVATE_PARAM_NAMES.includes(key)
-                        );
-                        const encryptedParams = await encryptQuery(
-                            JSON.stringify(privateParams),
-                            config,
-                        );
-
+                    if (preEncryptedParams !== null) {
                         for (const param of PRIVATE_PARAM_NAMES) {
                             queryParams.delete(param);
                         }
 
                         queryParams.set("enc", "true");
-                        queryParams.set("data", encryptedParams);
+                        queryParams.set("data", preEncryptedParams);
                     }
                     dashUrl =
                         (config.server.base_path + dashUrl.pathname + "?" +
