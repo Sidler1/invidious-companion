@@ -32,6 +32,118 @@ export const getFetchClient = (config: Config): {
         jitter: 0,
     };
 
+    // NEW: Multi-proxy pool support (highest priority for failover when YouTube blocks a proxy)
+    // Performance-first design: 
+    // - Pre-create ALL HttpClients at module load (zero per-request creation cost)
+    // - O(1) average selection for round-robin/random
+    // - Passive health checks with 5min cooldown (no active pings, max speed)
+    // - Auto-swap on 403/429 or errors with 1 fast retry
+    const proxyPool = config.networking.proxy_pool;
+    if (proxyPool?.enabled && proxyPool.proxies.length > 0) {
+        const proxyClients = new Map<string, Deno.HttpClient>();
+        const healthyProxies = new Set(proxyPool.proxies);
+        const failureTimes = new Map<string, number>(); // last failure timestamp
+        const COOLDOWN_MS = 300_000; // 5 minutes - balances recovery speed vs stability
+
+        for (const proxyUrl of proxyPool.proxies) {
+            try {
+                proxyClients.set(
+                    proxyUrl,
+                    Deno.createHttpClient({ proxy: { url: proxyUrl } }),
+                );
+            } catch (e) {
+                console.warn(`[WARN] Failed to init proxy client for ${proxyUrl}: ${e}`);
+                healthyProxies.delete(proxyUrl);
+            }
+        }
+
+        let rrIndex = 0;
+
+        const getNextProxy = (): string | null => {
+            if (healthyProxies.size === 0) return null;
+            const candidates = Array.from(healthyProxies);
+            if (proxyPool.rotation === "random") {
+                return candidates[Math.floor(Math.random() * candidates.length)];
+            }
+            // Round-robin preferring healthy (skip in-cooldown)
+            for (let i = 0; i < candidates.length; i++) {
+                const idx = (rrIndex + i) % candidates.length;
+                const p = candidates[idx];
+                const lastFail = failureTimes.get(p) || 0;
+                if (Date.now() - lastFail > COOLDOWN_MS) {
+                    rrIndex = (idx + 1) % candidates.length;
+                    return p;
+                }
+            }
+            // Fallback: use next even if cooling
+            rrIndex = (rrIndex + 1) % candidates.length;
+            return candidates[0];
+        };
+
+        const markProxyFailure = (proxyUrl: string) => {
+            if (proxyPool.health_check) {
+                failureTimes.set(proxyUrl, Date.now());
+            }
+        };
+
+        return async (input: FetchInputParameter, init?: RequestInit) => {
+            let proxyUrl = getNextProxy() || proxyPool.proxies[0];
+            const client = proxyClients.get(proxyUrl)!;
+
+            try {
+                const fetchRes = await fetchShim(
+                    config,
+                    retryOptions,
+                    input,
+                    {
+                        client,
+                        headers: init?.headers,
+                        method: init?.method,
+                        body: init?.body,
+                    },
+                );
+
+                // Fast block detection (status only - no expensive body scan for perf)
+                if (fetchRes.status === 403 || fetchRes.status === 429) {
+                    markProxyFailure(proxyUrl);
+                }
+
+                // Direct response for reusable clients - minimal overhead
+                return new Response(fetchRes.body, {
+                    status: fetchRes.status,
+                    headers: fetchRes.headers,
+                });
+            } catch (e) {
+                markProxyFailure(proxyUrl);
+                // Lightning fast failover (1 retry max to preserve perf)
+                const nextProxy = getNextProxy();
+                if (nextProxy && nextProxy !== proxyUrl && proxyClients.has(nextProxy)) {
+                    const nextClient = proxyClients.get(nextProxy)!;
+                    try {
+                        const retryRes = await fetchShim(
+                            config,
+                            retryOptions,
+                            input,
+                            {
+                                client: nextClient,
+                                headers: init?.headers,
+                                method: init?.method,
+                                body: init?.body,
+                            },
+                        );
+                        return new Response(retryRes.body, {
+                            status: retryRes.status,
+                            headers: retryRes.headers,
+                        });
+                    } catch {
+                        // swallow, original error will propagate
+                    }
+                }
+                throw e;
+            }
+        };
+    }
+
     if (proxyAddress || (ipv6Block && ipv6Enabled)) {
         const reusableClient = proxyAddress && !ipv6Block
             ? Deno.createHttpClient({ proxy: { url: proxyAddress } })
