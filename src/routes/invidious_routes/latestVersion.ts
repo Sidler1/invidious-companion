@@ -67,8 +67,10 @@ latestVersion.get("/", async (c) => {
 
     if (videoInfo.playability_status?.status !== "OK") {
         throw new HTTPException(403, {
-            res: new Response("The video can't be played: " + id + " due to reason: " +
-                videoInfo.playability_status?.reason),
+            res: new Response(
+                "The video can't be played: " + id + " due to reason: " +
+                    videoInfo.playability_status?.reason,
+            ),
         });
     }
     const streamingData = videoInfo.streaming_data;

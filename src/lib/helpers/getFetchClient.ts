@@ -120,7 +120,9 @@ export const getFetchClient = (config: Config): {
             const proxyUrl = getNextProxy();
             if (!proxyUrl) {
                 // All proxies blacklisted and none recovered — fail explicitly
-                throw new Error("All proxies in the pool are blacklisted. No healthy proxy available.");
+                throw new Error(
+                    "All proxies in the pool are blacklisted. No healthy proxy available.",
+                );
             }
             const client = proxyClients.get(proxyUrl)!;
 

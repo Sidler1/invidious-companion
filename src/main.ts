@@ -65,7 +65,7 @@ const innertubeClientCookies = config.youtube_session.cookies;
  */
 const sharedState = {
     _client: null as Innertube | null,
-    _minter: null as TokenMinter | undefined,
+    _minter: null as unknown as TokenMinter | undefined,
     _lock: Promise.resolve() as Promise<unknown>,
 
     getClient(): Innertube {
@@ -74,7 +74,10 @@ const sharedState = {
     getMinter(): TokenMinter | undefined {
         return this._minter !== null ? this._minter : tokenMinter;
     },
-    async set(client: Innertube, minter: TokenMinter | undefined): Promise<void> {
+    async set(
+        client: Innertube,
+        minter: TokenMinter | undefined,
+    ): Promise<void> {
         await this._lock;
         this._lock = Promise.resolve();
         this._client = client;
@@ -148,7 +151,10 @@ if (!innertubeClientOauthEnabled) {
             if (innertubeClientJobPoTokenEnabled) {
                 try {
                     const result = await poTokenGenerate(config, metrics);
-                    await sharedState.set(result.innertubeClient, result.tokenMinter);
+                    await sharedState.set(
+                        result.innertubeClient,
+                        result.tokenMinter,
+                    );
                 } catch (err) {
                     metrics?.potokenGenerationFailure.inc();
                     throw err;

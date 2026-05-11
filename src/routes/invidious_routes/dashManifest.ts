@@ -63,8 +63,10 @@ dashManifest.get("/:videoId", async (c) => {
 
     if (videoInfo.playability_status?.status !== "OK") {
         throw new HTTPException(403, {
-            res: new Response("The video can't be played: " + videoId + " due to reason: " +
-                videoInfo.playability_status?.reason),
+            res: new Response(
+                "The video can't be played: " + videoId + " due to reason: " +
+                    videoInfo.playability_status?.reason,
+            ),
         });
     }
 
@@ -84,7 +86,7 @@ dashManifest.get("/:videoId", async (c) => {
         const dashFile = await FormatUtils.toDash(
             videoInfo.streaming_data,
             videoInfo.page[0].video_details?.is_post_live_dvr,
-            (url: URL) => {
+            async (url: URL) => {
                 let dashUrl = url;
                 const queryParams = new URLSearchParams(dashUrl.search);
                 // Can't create URL type without host part

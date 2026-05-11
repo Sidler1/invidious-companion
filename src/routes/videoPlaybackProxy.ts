@@ -103,7 +103,8 @@ videoPlaybackProxy.get("/", async (c) => {
         return new Response(rangeRes.body, {
             status: rangeRes.status,
             headers: {
-                "content-type": rangeRes.headers.get("content-type") || "video/mp4",
+                "content-type": rangeRes.headers.get("content-type") ||
+                    "video/mp4",
                 "content-range": rangeRes.headers.get("content-range") || "",
                 "content-length": rangeRes.headers.get("content-length") || "",
                 "accept-ranges": "bytes",
@@ -138,7 +139,8 @@ videoPlaybackProxy.get("/", async (c) => {
         return new Response(directRes.body, {
             status: directRes.status,
             headers: {
-                "content-type": directRes.headers.get("content-type") || "video/mp4",
+                "content-type": directRes.headers.get("content-type") ||
+                    "video/mp4",
                 "content-length": directRes.headers.get("content-length") || "",
                 "accept-ranges": "bytes",
                 "access-control-allow-origin": "*",
@@ -192,7 +194,10 @@ videoPlaybackProxy.get("/", async (c) => {
                 await acquire();
                 try {
                     const url = new URL(location);
-                    url.searchParams.set("range", `${chunk.start}-${chunk.end}`);
+                    url.searchParams.set(
+                        "range",
+                        `${chunk.start}-${chunk.end}`,
+                    );
 
                     const res = await fetchClient(url, {
                         method: "GET",
@@ -200,7 +205,9 @@ videoPlaybackProxy.get("/", async (c) => {
                     });
 
                     if (res.status !== 200 && res.status !== 206) {
-                        throw new Error(`Chunk ${chunk.start}-${chunk.end} failed with status ${res.status}`);
+                        throw new Error(
+                            `Chunk ${chunk.start}-${chunk.end} failed with status ${res.status}`,
+                        );
                     }
 
                     // Pipe this chunk's body directly to the writer

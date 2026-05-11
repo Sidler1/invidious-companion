@@ -51,14 +51,22 @@ export const youtubePlayerParsing = async ({
     if (videoCached != null && cacheEnabled) {
         metrics?.cacheHit.inc();
         try {
-            return JSON.parse(new TextDecoder().decode(decompress(videoCached)));
+            return JSON.parse(
+                new TextDecoder().decode(decompress(videoCached)),
+            );
         } catch (err) {
             // Corrupted cache entry — delete it and fall through to fresh fetch
-            console.error("[ERROR] Cache decompression failed, deleting corrupted entry:", err);
+            console.error(
+                "[ERROR] Cache decompression failed, deleting corrupted entry:",
+                err,
+            );
             try {
                 await kv.delete(["video_cache", videoId]);
             } catch (delErr) {
-                console.error("[ERROR] Failed to delete corrupted cache entry:", delErr);
+                console.error(
+                    "[ERROR] Failed to delete corrupted cache entry:",
+                    delErr,
+                );
             }
             // Fall through to fresh fetch below
         }
