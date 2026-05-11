@@ -31,12 +31,14 @@ videoPlaybackProxy.options("/", () => {
 /**
  * Streaming video playback proxy with bounded concurrency.
  *
- * Key improvements over the previous batch-and-pipe approach:
+ * Key improvements:
  * 1. Client Range headers are properly passed through to YouTube
- * 2. Bounded concurrent fetch with semaphore — only MAX_CONCURRENT chunks in flight at once
- * 3. Each chunk is piped to the client immediately after fetch (not held in memory)
- * 4. Correct HTTP status codes: 206 for range requests, 200 for full requests
- * 5. Memory-bounded: only MAX_CONCURRENT chunk buffers in memory regardless of video size
+ * 2. Chunked fetching uses HTTP Range headers (not YouTube's `range` query param)
+ *    — YouTube's CDN rejects chunked requests that only use the `range` query param
+ * 3. Bounded concurrent fetch with semaphore — only MAX_CONCURRENT chunks in flight
+ * 4. Each chunk is piped to the client immediately after fetch (not held in memory)
+ * 5. Correct HTTP status codes: 206 for range requests, 200 for full requests
+ * 6. Memory-bounded: only MAX_CONCURRENT chunk buffers in memory regardless of video size
  */
 videoPlaybackProxy.get("/", async (c) => {
     const { host, c: client, expire } = c.req.query();
@@ -69,12 +71,6 @@ videoPlaybackProxy.get("/", async (c) => {
     queryParams.delete("host");
     queryParams.delete("title");
 
-    // Pass through the client's Range header to YouTube
-    const rangeHeader = c.req.header("range");
-    if (rangeHeader) {
-        queryParams.set("range", rangeHeader.split("=")[1]);
-    }
-
     const headersToSend: HeadersInit = {
         "accept": "*/*",
         "accept-encoding": "gzip, deflate, br, zstd",
@@ -90,12 +86,12 @@ videoPlaybackProxy.get("/", async (c) => {
 
     // getFetchClient is now a singleton — returns the same cached fetch function
     // with shared proxy pool state, health tracking, and round-robin index.
-    // No longer creates a new HttpClient per request.
     const fetchClient = getFetchClient(config);
     const location = `https://${host}/videoplayback?${queryParams.toString()}`;
 
     // If client sent a Range request, pass it through directly to YouTube
     // and return YouTube's response as-is (no chunking needed for range requests)
+    const rangeHeader = c.req.header("range");
     if (rangeHeader) {
         const rangeRes = await fetchClient(location, {
             method: "GET",
@@ -151,7 +147,11 @@ videoPlaybackProxy.get("/", async (c) => {
         });
     }
 
-    // Large file: stream with bounded concurrent chunked fetching
+    // Large file: stream with bounded concurrent chunked fetching using
+    // HTTP Range headers. We use the standard Range header instead of
+    // YouTube's `range` query parameter because YouTube's CDN now rejects
+    // chunked requests that only use the query param without a matching
+    // Range HTTP header (returns 403).
     const MAX_CONCURRENT = 6;
     const contentType = headRes.headers.get("content-type") || "video/mp4";
 
@@ -196,15 +196,16 @@ videoPlaybackProxy.get("/", async (c) => {
             for (const chunk of chunks) {
                 await acquire();
                 try {
-                    const url = new URL(location);
-                    url.searchParams.set(
-                        "range",
-                        `${chunk.start}-${chunk.end}`,
-                    );
-
-                    const res = await fetchClient(url, {
+                    // Use HTTP Range header (standard) instead of `range` query parameter.
+                    // YouTube's CDN requires the Range header for chunked downloads —
+                    // using only the `range` query param results in 403 Forbidden.
+                    const res = await fetchClient(location, {
                         method: "GET",
-                        headers: headersToSend,
+                        headers: {
+                            ...headersToSend,
+                            "Range": `bytes=${chunk.start}-${chunk.end}`,
+                        },
+                        redirect: "manual",
                     });
 
                     if (res.status !== 200 && res.status !== 206) {
