@@ -15,14 +15,16 @@ import { existsSync } from "@std/fs/exists";
 import { parseConfig } from "./lib/helpers/config.ts";
 import { Metrics } from "./lib/helpers/metrics.ts";
 import { jsInterpreter } from "./lib/helpers/jsInterpreter.ts";
+import { CTX, logError, logInfo } from "./lib/helpers/log.ts";
 
 const config = await parseConfig();
 
 const args = parseArgs(Deno.args);
 
 if (args._version_date && args._version_commit) {
-    console.log(
-        `[INFO] Using Invidious companion version ${args._version_date}-${args._version_commit}`,
+    logInfo(
+        CTX.SERVER,
+        `Version ${args._version_date}-${args._version_commit}`,
     );
 }
 
@@ -93,11 +95,11 @@ export const tokenMinterReady = new Promise<void>((resolve) => {
 
 if (!innertubeClientOauthEnabled) {
     if (innertubeClientJobPoTokenEnabled) {
-        console.log("[INFO] job po_token is active.");
+        logInfo(CTX.PO_TOKEN, "Job is active");
         // Don't fetch fetch player yet for po_token
         innertubeClientFetchPlayer = false;
     } else if (!innertubeClientJobPoTokenEnabled) {
-        console.log("[INFO] job po_token is NOT active.");
+        logInfo(CTX.PO_TOKEN, "Job is NOT active");
     }
 }
 
@@ -123,7 +125,7 @@ innertubeClient = await Innertube.create({
 if (!innertubeClientOauthEnabled) {
     if (innertubeClientJobPoTokenEnabled) {
         // Initialize tokenMinter in background to not block server startup
-        console.log("[INFO] Starting PO token generation in background...");
+        logInfo(CTX.PO_TOKEN, "Starting generation in background...");
         retry(
             poTokenGenerate.bind(
                 poTokenGenerate,
@@ -135,7 +137,7 @@ if (!innertubeClientOauthEnabled) {
             await sharedState.set(result.innertubeClient, result.tokenMinter);
             tokenMinterReadyResolve?.();
         }).catch((err) => {
-            console.error("[ERROR] Failed to initialize PO token:", err);
+            logError(CTX.PO_TOKEN, "Failed to initialize", err);
             metrics?.potokenGenerationFailure.inc();
             tokenMinterReadyResolve?.();
         });
@@ -176,17 +178,18 @@ if (!innertubeClientOauthEnabled) {
 } else if (innertubeClientOauthEnabled) {
     // Fired when waiting for the user to authorize the sign in attempt.
     innertubeClient.session.on("auth-pending", (data) => {
-        console.log(
-            `[INFO] [OAUTH] Go to ${data.verification_url} in your browser and enter code ${data.user_code} to authenticate.`,
+        logInfo(
+            CTX.OAUTH,
+            `Go to ${data.verification_url} and enter code ${data.user_code}`,
         );
     });
     // Fired when authentication is successful.
     innertubeClient.session.on("auth", () => {
-        console.log("[INFO] [OAUTH] Sign in successful!");
+        logInfo(CTX.OAUTH, "Sign in successful");
     });
     // Fired when the access token expires.
     innertubeClient.session.on("update-credentials", async () => {
-        console.log("[INFO] [OAUTH] Credentials updated.");
+        logInfo(CTX.OAUTH, "Credentials updated");
         await innertubeClient.session.oauth.cacheCredentials();
     });
 
@@ -226,8 +229,9 @@ export function run(signal: AbortSignal, port: number, hostname: string) {
                 Deno.removeSync(udsPath);
             }
         } catch (err) {
-            console.log(
-                `[ERROR] Failed to delete unix domain socket '${udsPath}' before starting the server:`,
+            logError(
+                CTX.SERVER,
+                `Failed to delete socket '${udsPath}' before start`,
                 err,
             );
         }
@@ -242,9 +246,7 @@ export function run(signal: AbortSignal, port: number, hostname: string) {
                     } catch {
                         // chmod may fail on some platforms; socket is usable as-is
                     }
-                    console.log(
-                        `[INFO] Server successfully started at ${udsPath}.`,
-                    );
+                    logInfo(CTX.SERVER, `Started at ${udsPath}`);
                 },
                 signal: signal,
                 path: udsPath,
@@ -255,8 +257,9 @@ export function run(signal: AbortSignal, port: number, hostname: string) {
         return Deno.serve(
             {
                 onListen() {
-                    console.log(
-                        `[INFO] Server successfully started at http://${config.server.host}:${config.server.port}${config.server.base_path}`,
+                    logInfo(
+                        CTX.SERVER,
+                        `Started at http://${config.server.host}:${config.server.port}${config.server.base_path}`,
                     );
                 },
                 signal: signal,
@@ -274,8 +277,9 @@ if (import.meta.main) {
     run(signal, config.server.port, config.server.host);
 
     const shutdown = (signalName: string) => {
-        console.log(
-            `[INFO] Caught ${signalName}, initiating graceful shutdown...`,
+        logInfo(
+            CTX.SHUTDOWN,
+            `Caught ${signalName}, initiating graceful shutdown...`,
         );
         controller.abort();
 
@@ -286,15 +290,16 @@ if (import.meta.main) {
 
         // Optional: add a timeout for forced exit if shutdown hangs
         setTimeout(() => {
-            console.log(
-                "[WARN] Graceful shutdown timeout (10s) reached, forcing exit...",
+            logError(
+                CTX.SHUTDOWN,
+                "Graceful shutdown timeout (10s), forcing exit",
             );
             Deno.exit(0);
         }, 10000);
 
         // Give a moment for cleanup, then exit
         setTimeout(() => {
-            console.log("[INFO] Graceful shutdown completed.");
+            logInfo(CTX.SHUTDOWN, "Graceful shutdown completed");
             Deno.exit(0);
         }, 1000);
     };

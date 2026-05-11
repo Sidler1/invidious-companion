@@ -1,5 +1,6 @@
 import { z, ZodError } from "zod";
 import { parse } from "@std/toml";
+import { CTX, logError, logInfo } from "./log.ts";
 
 export const ConfigSchema = z.object({
     server: z.object({
@@ -57,7 +58,7 @@ export const ConfigSchema = z.object({
     }).strict().default({}),
     cache: z.object({
         enabled: z.boolean().default(
-            Deno.env.get("CACHE_ENABLED") === "false" ? false : true,
+            Deno.env.get("CACHE_ENABLED") !== "false",
         ),
         directory: z.string().default(
             Deno.env.get("CACHE_DIRECTORY") || "/var/tmp",
@@ -129,10 +130,8 @@ export const ConfigSchema = z.object({
     jobs: z.object({
         youtube_session: z.object({
             po_token_enabled: z.boolean().default(
-                Deno.env.get("JOBS_YOUTUBE_SESSION_PO_TOKEN_ENABLED") ===
-                        "false"
-                    ? false
-                    : true,
+                Deno.env.get("JOBS_YOUTUBE_SESSION_PO_TOKEN_ENABLED") !==
+                    "false",
             ),
             frequency: z.string().default(
                 Deno.env.get("JOBS_YOUTUBE_SESSION_FREQUENCY") || "*/5 * * * *",
@@ -160,18 +159,16 @@ export async function parseConfig() {
         () => null,
     );
     if (configFileContents) {
-        console.log("[INFO] Using custom settings local file");
+        logInfo(CTX.CONFIG, "Using custom settings local file");
     } else {
-        console.log(
-            "[INFO] No local config file found, using default config",
-        );
+        logInfo(CTX.CONFIG, "No local config file found, using defaults");
     }
 
     try {
         const rawConfig = configFileContents ? parse(configFileContents) : {};
         const validatedConfig = ConfigSchema.parse(rawConfig);
 
-        console.log("Loaded Configuration", validatedConfig);
+        logInfo(CTX.CONFIG, `Configuration loaded`);
 
         return validatedConfig;
     } catch (err) {
@@ -181,9 +178,14 @@ export async function parseConfig() {
             errorMessage +=
                 ` or in your configuration file located at ${configFileName}`;
         }
-        console.log(errorMessage);
+        logError(CTX.CONFIG, errorMessage);
         if (err instanceof ZodError) {
-            console.log(err.issues);
+            logError(
+                CTX.CONFIG,
+                err.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join(
+                    "; ",
+                ),
+            );
             // Include detailed error information in the thrown error for testing
             const detailedMessage = err.issues.map((issue) =>
                 `${issue.path.join(".")}: ${issue.message}`
