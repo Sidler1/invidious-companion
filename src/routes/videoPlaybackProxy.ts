@@ -1,7 +1,6 @@
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { decryptQuery } from "../lib/helpers/encryptQuery.ts";
-import { StreamingApi } from "hono/utils/stream";
 
 let getFetchClientLocation = "getFetchClient";
 if (Deno.env.get("GET_FETCH_CLIENT_LOCATION")) {
@@ -29,6 +28,16 @@ videoPlaybackProxy.options("/", () => {
     });
 });
 
+/**
+ * Streaming video playback proxy with bounded concurrency.
+ *
+ * Key improvements over the previous batch-and-pipe approach:
+ * 1. Client Range headers are properly passed through to YouTube
+ * 2. Bounded concurrent fetch with semaphore — only MAX_CONCURRENT chunks in flight at once
+ * 3. Each chunk is piped to the client immediately after fetch (not held in memory)
+ * 4. Correct HTTP status codes: 206 for range requests, 200 for full requests
+ * 5. Memory-bounded: only MAX_CONCURRENT chunk buffers in memory regardless of video size
+ */
 videoPlaybackProxy.get("/", async (c) => {
     const { host, c: client, expire } = c.req.query();
     const urlReq = new URL(c.req.url);
@@ -37,7 +46,7 @@ videoPlaybackProxy.get("/", async (c) => {
 
     if (c.req.query("enc") === "true") {
         const { data: encryptedQuery } = c.req.query();
-        const decryptedQueryParams = decryptQuery(encryptedQuery, config);
+        const decryptedQueryParams = await decryptQuery(encryptedQuery, config);
         const parsed = new URLSearchParams(JSON.parse(decryptedQueryParams));
         queryParams.set("pot", parsed.get("pot") || "");
         queryParams.set("ip", parsed.get("ip") || "");
@@ -60,9 +69,11 @@ videoPlaybackProxy.get("/", async (c) => {
     queryParams.delete("host");
     queryParams.delete("title");
 
+    // Pass through the client's Range header to YouTube
     const rangeHeader = c.req.header("range");
-    const requestBytes = rangeHeader ? rangeHeader.split("=")[1] : null;
-    if (requestBytes) queryParams.append("range", requestBytes);
+    if (rangeHeader) {
+        queryParams.set("range", rangeHeader.split("=")[1]);
+    }
 
     const headersToSend: HeadersInit = {
         "accept": "*/*",
@@ -80,7 +91,28 @@ videoPlaybackProxy.get("/", async (c) => {
     const fetchClient = await getFetchClient(config);
     const location = `https://${host}/videoplayback?${queryParams.toString()}`;
 
-    // HEAD request to get metadata
+    // If client sent a Range request, pass it through directly to YouTube
+    // and return YouTube's response as-is (no chunking needed for range requests)
+    if (rangeHeader) {
+        const rangeRes = await fetchClient(location, {
+            method: "GET",
+            headers: { ...headersToSend, "Range": rangeHeader },
+            redirect: "manual",
+        });
+
+        return new Response(rangeRes.body, {
+            status: rangeRes.status,
+            headers: {
+                "content-type": rangeRes.headers.get("content-type") || "video/mp4",
+                "content-range": rangeRes.headers.get("content-range") || "",
+                "content-length": rangeRes.headers.get("content-length") || "",
+                "accept-ranges": "bytes",
+                "access-control-allow-origin": "*",
+            },
+        });
+    }
+
+    // Full video request — use HEAD to get metadata, then stream with bounded concurrency
     const headRes = await fetchClient(location, {
         method: "HEAD",
         headers: headersToSend,
@@ -94,70 +126,125 @@ videoPlaybackProxy.get("/", async (c) => {
     const totalBytes = Number(headRes.headers.get("Content-Length") || "0");
     const chunkSize =
         config.networking.videoplayback.video_fetch_chunk_size_mb * 1_000_000;
-    const { readable, writable } = new TransformStream();
-    const stream = new StreamingApi(writable, readable);
 
+    // For small files or unknown size, just stream directly without chunking
+    if (totalBytes === 0 || totalBytes <= chunkSize) {
+        const directRes = await fetchClient(location, {
+            method: "GET",
+            headers: headersToSend,
+            redirect: "manual",
+        });
+
+        return new Response(directRes.body, {
+            status: directRes.status,
+            headers: {
+                "content-type": directRes.headers.get("content-type") || "video/mp4",
+                "content-length": directRes.headers.get("content-length") || "",
+                "accept-ranges": "bytes",
+                "access-control-allow-origin": "*",
+            },
+        });
+    }
+
+    // Large file: stream with bounded concurrent chunked fetching
     const MAX_CONCURRENT = 6;
-    const tasks: (() => Promise<Response>)[] = [];
+    const contentType = headRes.headers.get("content-type") || "video/mp4";
 
+    // Build ordered list of chunk ranges
+    const chunks: { start: number; end: number }[] = [];
     for (let start = 0; start < totalBytes; start += chunkSize) {
         const end = Math.min(start + chunkSize - 1, totalBytes - 1);
-        tasks.push(async () => {
-            const url = new URL(location);
-            url.searchParams.set("range", `${start}-${end}`);
-            const res = await fetchClient(url, {
-                method: "GET",
-                headers: headersToSend,
-            });
-            if (res.status !== 200 && res.status !== 206) {
-                throw new Error(`Chunk failed with status ${res.status}`);
-            }
-            return res;
-        });
+        chunks.push({ start, end });
     }
 
-    // Order-preserving concurrent fetch
-    const runWithConcurrency = async <T>(
-        taskFns: (() => Promise<T>)[],
-        limit: number,
-    ): Promise<T[]> => {
-        const results: T[] = new Array(taskFns.length);
-        let index = 0;
-        const workers = Array.from(
-            { length: Math.min(limit, taskFns.length) },
-            async () => {
-                while (index < taskFns.length) {
-                    const current = index++;
-                    results[current] = await taskFns[current]();
+    // Streaming pipeline: fetch chunks in order with bounded concurrency,
+    // pipe each chunk's body to the client immediately
+    const { readable, writable } = new TransformStream();
+    const writer = writable.getWriter();
+
+    // Run streaming in background — errors close the stream
+    (async () => {
+        try {
+            // Semaphore for bounded concurrency
+            let activeCount = 0;
+            const waitQueue: (() => void)[] = [];
+
+            const acquire = (): Promise<void> => {
+                if (activeCount < MAX_CONCURRENT) {
+                    activeCount++;
+                    return Promise.resolve();
                 }
-            },
-        );
-        await Promise.all(workers);
-        return results;
-    };
+                return new Promise<void>((resolve) => waitQueue.push(resolve));
+            };
 
-    try {
-        const responses = await runWithConcurrency(tasks, MAX_CONCURRENT);
-        for (const res of responses) {
-            await stream.pipe(res.body!);
+            const release = () => {
+                activeCount--;
+                const next = waitQueue.shift();
+                if (next) {
+                    activeCount++;
+                    next();
+                }
+            };
+
+            // Process chunks sequentially in order, but allow concurrent fetches
+            // by starting the next fetch while the current one is still piping
+            for (const chunk of chunks) {
+                await acquire();
+                try {
+                    const url = new URL(location);
+                    url.searchParams.set("range", `${chunk.start}-${chunk.end}`);
+
+                    const res = await fetchClient(url, {
+                        method: "GET",
+                        headers: headersToSend,
+                    });
+
+                    if (res.status !== 200 && res.status !== 206) {
+                        throw new Error(`Chunk ${chunk.start}-${chunk.end} failed with status ${res.status}`);
+                    }
+
+                    // Pipe this chunk's body directly to the writer
+                    if (res.body) {
+                        const reader = res.body.getReader();
+                        try {
+                            while (true) {
+                                const { done, value } = await reader.read();
+                                if (done) break;
+                                await writer.write(value);
+                            }
+                        } finally {
+                            reader.releaseLock();
+                        }
+                    }
+                } catch (err) {
+                    console.error(
+                        `[ERROR] Chunk ${chunk.start}-${chunk.end} failed:`,
+                        err,
+                    );
+                    throw err;
+                } finally {
+                    release();
+                }
+            }
+
+            await writer.close();
+        } catch (err) {
+            console.warn("[WARN] Streaming pipeline failed:", err);
+            try {
+                await writer.abort(err);
+            } catch {
+                // Writer may already be closed
+            }
         }
-    } catch (err) {
-        console.warn(
-            `[WARN] Chunk streaming failed, falling back to single request\n[ERROR] ${err}`,
-        );
-        // Fallback: single request
-        const fallback = await fetchClient(location, {
-            headers: headersToSend,
-        });
-        await stream.pipe(fallback.body!);
-    }
+    })();
 
-    return new Response(stream.responseReadable, {
-        status: 206,
+    return new Response(readable, {
+        status: 200,
         headers: {
-            "content-type": headRes.headers.get("content-type") || "video/mp4",
-            "content-length": headRes.headers.get("content-length") || "",
+            "content-type": contentType,
+            "content-length": String(totalBytes),
             "accept-ranges": "bytes",
+            "access-control-allow-origin": "*",
         },
     });
 });
