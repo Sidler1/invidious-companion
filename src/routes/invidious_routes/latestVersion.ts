@@ -46,7 +46,7 @@ latestVersion.get("/", async (c) => {
             res: new Response("No check ID."),
         });
     } else if (config.server.verify_requests && check) {
-        if (verifyRequest(check, id, config) === false) {
+        if (await verifyRequest(check, id, config) === false) {
             throw new HTTPException(400, {
                 res: new Response("ID incorrect."),
             });
@@ -66,8 +66,10 @@ latestVersion.get("/", async (c) => {
     );
 
     if (videoInfo.playability_status?.status !== "OK") {
-        throw ("The video can't be played: " + id + " due to reason: " +
-            videoInfo.playability_status?.reason);
+        throw new HTTPException(403, {
+            res: new Response("The video can't be played: " + id + " due to reason: " +
+                videoInfo.playability_status?.reason),
+        });
     }
     const streamingData = videoInfo.streaming_data;
     const availableFormats = streamingData?.formats.concat(
@@ -98,7 +100,7 @@ latestVersion.get("/", async (c) => {
                 const privateParams = [...queryParams].filter(([key]) =>
                     PRIVATE_PARAM_NAMES.includes(key)
                 );
-                const encryptedParams = encryptQuery(
+                const encryptedParams = await encryptQuery(
                     JSON.stringify(privateParams),
                     config,
                 );

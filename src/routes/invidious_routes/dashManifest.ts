@@ -42,7 +42,7 @@ dashManifest.get("/:videoId", async (c) => {
             res: new Response("No check ID."),
         });
     } else if (config.server.verify_requests && check) {
-        if (verifyRequest(check, videoId, config) === false) {
+        if (await verifyRequest(check, videoId, config) === false) {
             throw new HTTPException(400, {
                 res: new Response("ID incorrect."),
             });
@@ -62,8 +62,10 @@ dashManifest.get("/:videoId", async (c) => {
     );
 
     if (videoInfo.playability_status?.status !== "OK") {
-        throw ("The video can't be played: " + videoId + " due to reason: " +
-            videoInfo.playability_status?.reason);
+        throw new HTTPException(403, {
+            res: new Response("The video can't be played: " + videoId + " due to reason: " +
+                videoInfo.playability_status?.reason),
+        });
     }
 
     c.header("content-type", "application/dash+xml");
@@ -98,7 +100,7 @@ dashManifest.get("/:videoId", async (c) => {
                         const privateParams = [...queryParams].filter(([key]) =>
                             PRIVATE_PARAM_NAMES.includes(key)
                         );
-                        const encryptedParams = encryptQuery(
+                        const encryptedParams = await encryptQuery(
                             JSON.stringify(privateParams),
                             config,
                         );
