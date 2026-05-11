@@ -1,6 +1,7 @@
 import { retry, type RetryOptions } from "@std/async";
 import type { Config } from "./config.ts";
 import { generateRandomIPv6 } from "./ipv6Rotation.ts";
+import { CTX, logInfo, logWarn } from "./log.ts";
 
 type FetchInputParameter = Parameters<typeof fetch>[0];
 type FetchInitParameterWithClient =
@@ -71,8 +72,9 @@ export const getFetchClient = (config: Config): FetchFn => {
                     Deno.createHttpClient({ proxy: { url: proxyUrl } }),
                 );
             } catch (e) {
-                console.warn(
-                    `[WARN] Failed to init proxy: ${proxyUrl}\n[ERROR] ${e}`,
+                logWarn(
+                    CTX.PROXY,
+                    `Failed to init: ${maskProxyUrl(proxyUrl)} — ${e}`,
                 );
                 healthyProxies.delete(proxyUrl);
             }
@@ -89,8 +91,9 @@ export const getFetchClient = (config: Config): FetchFn => {
                 if (healthyProxies.has(proxyUrl)) continue;
                 const lastBlacklist = lastBlacklistTime.get(proxyUrl) || 0;
                 if (now - lastBlacklist > BLACKLIST_MS) {
-                    console.log(
-                        `[RECOVER] Proxy recovered after cooldown: ${proxyUrl}`,
+                    logInfo(
+                        CTX.PROXY,
+                        `Recovered after cooldown: ${maskProxyUrl(proxyUrl)}`,
                     );
                     healthyProxies.add(proxyUrl);
                     failureCounts.set(proxyUrl, 0);
@@ -120,8 +123,11 @@ export const getFetchClient = (config: Config): FetchFn => {
             failureCounts.set(proxyUrl, count);
 
             if (count >= FAILURE_THRESHOLD) {
-                console.warn(
-                    `[BLACKLIST] Proxy blacklisted for 1h: ${proxyUrl} (after ${count} failures)`,
+                logWarn(
+                    CTX.PROXY,
+                    `Blacklisted for 1h: ${
+                        maskProxyUrl(proxyUrl)
+                    } (${count} failures)`,
                 );
                 healthyProxies.delete(proxyUrl);
                 lastBlacklistTime.set(proxyUrl, Date.now());
@@ -211,9 +217,9 @@ export const getFetchClient = (config: Config): FetchFn => {
             // so blocks via a single proxy or direct connection were invisible.
             const isBlocked = await checkYouTubeBlock(fetchRes);
             if (isBlocked) {
-                console.warn(
-                    `[WARN] YouTube block detected via single-proxy/direct path for ${input}. ` +
-                        "Consider enabling proxy_pool for automatic failover.",
+                logWarn(
+                    CTX.PROXY,
+                    `YouTube block detected on direct/single-proxy path — consider enabling proxy_pool`,
                 );
             }
 
@@ -331,4 +337,20 @@ function fetchShim(
             ...(init || {}),
         });
     return fetchRetry ? retry(callFetch, retryOptions) : callFetch();
+}
+
+/**
+ * Mask credentials in proxy URLs for safe logging.
+ * http://user:pass@1.2.3.4:8080 → http://1.2.3.4:8080
+ */
+function maskProxyUrl(url: string): string {
+    try {
+        const parsed = new URL(url);
+        if (parsed.username || parsed.password) {
+            return `${parsed.protocol}//${parsed.host}`;
+        }
+        return url;
+    } catch {
+        return url;
+    }
 }

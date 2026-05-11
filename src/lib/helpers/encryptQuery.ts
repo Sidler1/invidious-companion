@@ -1,5 +1,6 @@
 import { decodeBase64, encodeBase64 } from "@std/encoding/base64";
 import type { Config } from "./config.ts";
+import { CTX, logError } from "./log.ts";
 
 /**
  * Encrypt query parameters using AES-256-GCM.
@@ -35,7 +36,7 @@ export const encryptQuery = async (
 
         return encodeBase64(combined);
     } catch (err) {
-        console.error("[ERROR] Failed to encrypt query parameters:", err);
+        logError(CTX.ENCRYPT, "Failed to encrypt query parameters", err);
         return "";
     }
 };
@@ -60,7 +61,7 @@ export const decryptQuery = async (
 
         return new TextDecoder().decode(decrypted);
     } catch (err) {
-        console.error("[ERROR] Failed to decrypt query parameters:", err);
+        logError(CTX.ENCRYPT, "Failed to decrypt query parameters", err);
         return "";
     }
 };

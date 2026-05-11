@@ -3,6 +3,7 @@ import { generateRandomString } from "youtubei.js/Utils";
 import { compress, decompress } from "brotli";
 import type { TokenMinter } from "../jobs/potoken.ts";
 import { Metrics } from "./metrics.ts";
+import { CTX, logError } from "./log.ts";
 let youtubePlayerReqLocation = "youtubePlayerReq";
 if (Deno.env.get("YT_PLAYER_REQ_LOCATION")) {
     if (Deno.env.has("DENO_COMPILED")) {
@@ -56,15 +57,17 @@ export const youtubePlayerParsing = async ({
             );
         } catch (err) {
             // Corrupted cache entry — delete it and fall through to fresh fetch
-            console.error(
-                "[ERROR] Cache decompression failed, deleting corrupted entry:",
+            logError(
+                CTX.CACHE,
+                `Decompression failed for ${videoId}, deleting corrupted entry`,
                 err,
             );
             try {
                 await kv.delete(["video_cache", videoId]);
             } catch (delErr) {
-                console.error(
-                    "[ERROR] Failed to delete corrupted cache entry:",
+                logError(
+                    CTX.CACHE,
+                    `Failed to delete corrupted entry for ${videoId}`,
                     delErr,
                 );
             }
@@ -191,7 +194,11 @@ export const youtubePlayerParsing = async ({
                             },
                         );
                     } catch (err) {
-                        console.error("[ERROR] Failed to write to cache:", err);
+                        logError(
+                            CTX.CACHE,
+                            `Failed to write ${videoId} to cache`,
+                            err,
+                        );
                     }
                 })();
             }

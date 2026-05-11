@@ -1,5 +1,4 @@
 import { Hono } from "hono";
-import { logger } from "hono/logger";
 import { bearerAuth } from "hono/bearer-auth";
 
 import youtubeApiPlayer from "./youtube_api_routes/player.ts";
@@ -11,21 +10,17 @@ import videoPlaybackProxy from "./videoPlaybackProxy.ts";
 import type { Config } from "../lib/helpers/config.ts";
 import metrics from "./metrics.ts";
 import health from "./health.ts";
+import { compactLogger } from "./compactLogger.ts";
 
 export const companionRoutes = (
     app: Hono,
     config: Config,
 ) => {
-    const loggerUnixSocket = (message: string, ...rest: string[]) => {
-        message = message.replace("//localhost/", "/");
-        console.log(message, ...rest);
-    };
-
-    if (config.server.use_unix_socket) {
-        app.use("*", logger(loggerUnixSocket));
-    } else {
-        app.use("*", logger());
-    }
+    // Use compact logger instead of Hono's default logger.
+    // The default logger dumps the entire URL (including all query params)
+    // into a single massive log line. Our compact logger shows just the
+    // route path and key context parameters (itag, host, videoId, etc.).
+    app.use("*", compactLogger);
 
     app.use(
         "/youtubei/v1/*",

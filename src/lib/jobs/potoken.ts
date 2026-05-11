@@ -5,6 +5,8 @@ import {
 } from "../helpers/youtubePlayerHandling.ts";
 import type { Config } from "../helpers/config.ts";
 import { Metrics } from "../helpers/metrics.ts";
+import { CTX, logError, logInfo, logWarn } from "../helpers/log.ts";
+
 let getFetchClientLocation = "getFetchClient";
 if (Deno.env.get("GET_FETCH_CLIENT_LOCATION")) {
     if (Deno.env.has("DENO_COMPILED")) {
@@ -29,9 +31,6 @@ const workers: TokenGeneratorWorker[] = [];
 function createMinter(worker: TokenGeneratorWorker) {
     return (videoId: string): Promise<string> => {
         const { promise, resolve } = Promise.withResolvers<string>();
-        // generate a UUID to identify the request as many minter calls
-        // may be made within a timespan, and this function will be
-        // informed about all of them until it's got its own
         const requestId = crypto.randomUUID();
         const listener = (message: MessageEvent) => {
             const parsedMessage = OutputMessageSchema.parse(message.data);
@@ -72,12 +71,10 @@ export const poTokenGenerate = (
             name: "PO Token Generator",
         },
     );
-    // take note of the worker so we can kill it once a new one takes its place
     workers.push(worker);
     worker.addEventListener("message", async (event) => {
         const parsedMessage = OutputMessageSchema.parse(event.data);
 
-        // worker is listening for messages
         if (parsedMessage.type === "ready") {
             const untypedPostMessage = worker.postMessage.bind(worker);
             worker.postMessage = (message: InputMessage) =>
@@ -86,12 +83,11 @@ export const poTokenGenerate = (
         }
 
         if (parsedMessage.type === "error") {
-            console.log({ errorFromWorker: parsedMessage.error });
+            logError(CTX.PO_TOKEN, `Worker error: ${parsedMessage.error}`);
             worker.terminate();
             reject(parsedMessage.error);
         }
 
-        // worker is initialised and has passed back a session token and visitor data
         if (parsedMessage.type === "initialised") {
             try {
                 const instantiatedInnertubeClient = await Innertube.create({
@@ -104,14 +100,13 @@ export const poTokenGenerate = (
                     player_id: config.youtube_session.player_id,
                 });
                 const minter = createMinter(worker);
-                // check token from minter
                 await checkToken({
                     instantiatedInnertubeClient,
                     config,
                     integrityTokenBasedMinter: minter,
                     metrics,
                 });
-                console.log("[INFO] Successfully generated PO token");
+                logInfo(CTX.PO_TOKEN, "Successfully generated");
                 const numberToKill = workers.length - 1;
                 for (let i = 0; i < numberToKill; i++) {
                     const workerToKill = workers.shift();
@@ -122,9 +117,10 @@ export const poTokenGenerate = (
                     tokenMinter: minter,
                 });
             } catch (err) {
-                console.log("[WARN] Failed to get valid PO token, will retry", {
-                    err,
-                });
+                logWarn(
+                    CTX.PO_TOKEN,
+                    `Failed to get valid token, will retry: ${err}`,
+                );
                 worker.terminate();
                 reject(err);
             }
@@ -148,14 +144,13 @@ async function checkToken({
     const fetchImpl = getFetchClient(config);
 
     try {
-        console.log("[INFO] Searching for videos to validate PO token");
+        logInfo(CTX.PO_TOKEN, "Searching for videos to validate token");
         const searchResults = await instantiatedInnertubeClient.search("news", {
             type: "video",
             upload_date: "week",
             duration: "three_to_twenty_mins",
         });
 
-        // Get all videos that have an id property and shuffle them randomly
         const videos = searchResults.videos
             .filter((video) =>
                 video.type === "Video" && "id" in video && video.id
@@ -165,25 +160,23 @@ async function checkToken({
             .map(({ value }) => value);
 
         if (videos.length === 0) {
-            throw new Error("No videos with valid IDs found in search results");
+            new Error("No videos with valid IDs found in search results");
         }
 
-        // Try up to 3 random videos to validate the token
         const maxAttempts = Math.min(3, videos.length);
         for (let attempt = 0; attempt < maxAttempts; attempt++) {
             const video = videos[attempt];
 
             try {
-                // Type guard to ensure video has an id property
                 if (!("id" in video) || !video.id) {
-                    console.log(
-                        `[WARN] Video at index ${attempt} has no valid ID, trying next video`,
-                    );
                     continue;
                 }
 
-                console.log(
-                    `[INFO] Validating PO token with video: ${video.id}`,
+                logInfo(
+                    CTX.PO_TOKEN,
+                    `Validating with video ${video.id} (${
+                        attempt + 1
+                    }/${maxAttempts})`,
                 );
 
                 const youtubePlayerResponseJson = await youtubePlayerParsing({
@@ -203,8 +196,9 @@ async function checkToken({
                 const validFormat = videoInfo.streaming_data
                     ?.adaptive_formats[0];
                 if (!validFormat) {
-                    console.log(
-                        `[WARN] No valid format found for video ${video.id}, trying next video`,
+                    logWarn(
+                        CTX.PO_TOKEN,
+                        `No valid format for ${video.id}, trying next`,
                     );
                     continue;
                 }
@@ -214,61 +208,51 @@ async function checkToken({
                 });
 
                 if (result.status !== 200) {
-                    console.log(
-                        `[WARN] Got status ${result.status} for video ${video.id}, trying next video`,
+                    logWarn(
+                        CTX.PO_TOKEN,
+                        `Got ${result.status} for ${video.id}, trying next`,
                     );
-                    continue;
                 } else {
-                    console.log(
-                        `[INFO] Successfully validated PO token with video: ${video.id}`,
-                    );
-                    return; // Success
+                    logInfo(CTX.PO_TOKEN, `Validated with video ${video.id}`);
+                    return;
                 }
             } catch (err) {
-                const videoId = ("id" in video && video.id)
-                    ? video.id
-                    : "unknown";
-                console.log(
-                    `[WARN] Failed to validate with video ${videoId}:`,
-                    { err },
+                const videoId = ("id" in video && video.id) ? video.id : "?";
+                logWarn(
+                    CTX.PO_TOKEN,
+                    `Validation failed for ${videoId}: ${err}`,
                 );
                 if (attempt === maxAttempts - 1) {
-                    throw new Error(
+                    new Error(
                         "Failed to validate PO token with any available videos",
                     );
                 }
-                continue;
             }
         }
-        // If we reach here, all attempts failed without throwing an exception
-        throw new Error(
+        new Error(
             "Failed to validate PO token: all validation attempts returned non-200 status codes",
         );
     } catch (err) {
-        console.log("Failed to validate PO token using search method", { err });
+        logWarn(CTX.PO_TOKEN, `Validation failed: ${err}`);
         throw err;
     }
 }
 
 export function cleanupWorkers(): void {
     if (workers.length === 0) {
-        console.log("[INFO] No PO token workers to clean up.");
         return;
     }
-    console.log(
-        `[INFO] Cleaning up ${workers.length} PO token worker(s) for graceful shutdown...`,
+    logInfo(
+        CTX.PO_TOKEN,
+        `Cleaning up ${workers.length} worker(s) for shutdown`,
     );
     while (workers.length > 0) {
         const worker = workers.shift();
         if (worker) {
             try {
                 worker.terminate();
-                console.log("[INFO] Terminated a PO token worker.");
             } catch (err) {
-                console.error(
-                    "[ERROR] Failed to terminate PO token worker:",
-                    err,
-                );
+                logError(CTX.PO_TOKEN, "Failed to terminate worker", err);
             }
         }
     }
