@@ -52,7 +52,7 @@ videoPlaybackProxy.get("/", async (c) => {
         queryParams.set("ip", parsed.get("ip") || "");
     }
 
-    if (!host || !/[\\w-]+.googlevideo.com/.test(host)) {
+    if (!host || !/[\w-]+\.googlevideo\.com/.test(host)) {
         throw new HTTPException(400, { res: new Response("Invalid host") });
     }
 
@@ -88,7 +88,10 @@ videoPlaybackProxy.get("/", async (c) => {
             : "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
     };
 
-    const fetchClient = await getFetchClient(config);
+    // getFetchClient is now a singleton — returns the same cached fetch function
+    // with shared proxy pool state, health tracking, and round-robin index.
+    // No longer creates a new HttpClient per request.
+    const fetchClient = getFetchClient(config);
     const location = `https://${host}/videoplayback?${queryParams.toString()}`;
 
     // If client sent a Range request, pass it through directly to YouTube
