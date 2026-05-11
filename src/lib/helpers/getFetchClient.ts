@@ -41,6 +41,7 @@ export const getFetchClient = (config: Config): {
     const proxyPool = config.networking.proxy_pool;
     if (proxyPool?.enabled && proxyPool.proxies.length > 0) {
         const proxyClients = new Map<string, Deno.HttpClient>();
+        const allProxyUrls = [...proxyPool.proxies]; // permanent list for recovery
         const healthyProxies = new Set(proxyPool.proxies);
         const failureCounts = new Map<string, number>();
         const lastBlacklistTime = new Map<string, number>();
@@ -63,7 +64,27 @@ export const getFetchClient = (config: Config): {
 
         let rrIndex = 0;
 
+        const recoverProxies = (): void => {
+            // Check blacklisted proxies for cooldown expiry and recover them
+            if (healthyProxies.size > 0) return; // only recover when pool is empty
+            const now = Date.now();
+            for (const proxyUrl of allProxyUrls) {
+                if (healthyProxies.has(proxyUrl)) continue;
+                const lastBlacklist = lastBlacklistTime.get(proxyUrl) || 0;
+                if (now - lastBlacklist > BLACKLIST_MS) {
+                    console.log(
+                        `[RECOVER] Proxy recovered after cooldown: ${proxyUrl}`,
+                    );
+                    healthyProxies.add(proxyUrl);
+                    failureCounts.set(proxyUrl, 0);
+                }
+            }
+        };
+
         const getNextProxy = (): string | null => {
+            if (healthyProxies.size === 0) {
+                recoverProxies(); // attempt to recover blacklisted proxies
+            }
             if (healthyProxies.size === 0) return null;
             const candidates = Array.from(healthyProxies);
             if (proxyPool.rotation === "random") {
@@ -71,16 +92,10 @@ export const getFetchClient = (config: Config): {
                     Math.floor(Math.random() * candidates.length)
                 ];
             }
-            for (let i = 0; i < candidates.length; i++) {
-                const idx = (rrIndex + i) % candidates.length;
-                const p = candidates[idx];
-                const lastBlacklist = lastBlacklistTime.get(p) || 0;
-                if (Date.now() - lastBlacklist > BLACKLIST_MS) {
-                    rrIndex = (idx + 1) % candidates.length;
-                    return p;
-                }
-            }
-            return candidates[0];
+            // Round-robin
+            const proxy = candidates[rrIndex % candidates.length];
+            rrIndex = (rrIndex + 1) % candidates.length;
+            return proxy;
         };
 
         const markProxyFailure = (proxyUrl: string) => {
@@ -102,7 +117,11 @@ export const getFetchClient = (config: Config): {
         };
 
         return async (input: FetchInputParameter, init?: RequestInit) => {
-            const proxyUrl = getNextProxy() || proxyPool.proxies[0];
+            const proxyUrl = getNextProxy();
+            if (!proxyUrl) {
+                // All proxies blacklisted and none recovered — fail explicitly
+                throw new Error("All proxies in the pool are blacklisted. No healthy proxy available.");
+            }
             const client = proxyClients.get(proxyUrl)!;
 
             try {
