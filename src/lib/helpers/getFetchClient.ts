@@ -96,7 +96,7 @@ export const getFetchClient = (config: Config): {
         };
 
         return async (input: FetchInputParameter, init?: RequestInit) => {
-            let proxyUrl = getNextProxy() || proxyPool.proxies[0];
+            const proxyUrl = getNextProxy() || proxyPool.proxies[0];
             const client = proxyClients.get(proxyUrl)!;
 
             try {
@@ -124,15 +124,8 @@ export const getFetchClient = (config: Config): {
                             isBlocked = true;
                         }
                     }
-                    // Reconstruct body (important for streaming)
-                    const newBody = new ReadableStream({
-                        start(controller) {
-                            if (value) controller.enqueue(value);
-                            // Note: full body reconstruction would require more complex piping;
-                            // for now we rely on status + early detection. In practice most blocks are caught by status.
-                        }
-                    });
-                    // For simplicity in this hot path we accept minor trade-off on rare body-peek cases
+                    // Note: We don't reconstruct the body here for performance.
+                    // Most blocks are caught by status code. Body peek is best-effort.
                 }
 
                 if (isBlocked) {
