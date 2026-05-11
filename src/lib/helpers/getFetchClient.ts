@@ -7,6 +7,10 @@ type FetchInitParameterWithClient =
     | RequestInit
     | RequestInit & { client: Deno.HttpClient };
 type FetchReturn = ReturnType<typeof fetch>;
+type FetchFn = (
+    input: FetchInputParameter,
+    init?: FetchInitParameterWithClient,
+) => FetchReturn;
 
 let ipv6Enabled = true;
 
@@ -17,12 +21,24 @@ const YOUTUBE_BLOCK_SIGNALS = [
     "captcha",
 ];
 
-export const getFetchClient = (config: Config): {
-    (
-        input: FetchInputParameter,
-        init?: FetchInitParameterWithClient,
-    ): FetchReturn;
-} => {
+/**
+ * Singleton cache: ensures getFetchClient(config) returns the SAME fetch
+ * function (with shared proxy pool state, round-robin index, health tracking)
+ * no matter how many times it's called across the codebase.
+ *
+ * Before this fix, every call to getFetchClient() created a brand-new set of
+ * HttpClients, round-robin state, and health tracking — meaning proxy pool
+ * state was never shared between main.ts, potoken.ts, and videoPlaybackProxy.ts.
+ */
+let cachedFetchFn: FetchFn | null = null;
+let cachedConfigRef: Config | null = null;
+
+export const getFetchClient = (config: Config): FetchFn => {
+    // Return cached instance if the same config object is used
+    if (cachedFetchFn && cachedConfigRef === config) {
+        return cachedFetchFn;
+    }
+
     const proxyAddress = config.networking.proxy;
     const ipv6Block = config.networking.ipv6_block;
 
@@ -65,8 +81,9 @@ export const getFetchClient = (config: Config): {
         let rrIndex = 0;
 
         const recoverProxies = (): void => {
-            // Check blacklisted proxies for cooldown expiry and recover them
-            if (healthyProxies.size > 0) return; // only recover when pool is empty
+            // ALWAYS check blacklisted proxies for cooldown expiry.
+            // Previously this only ran when healthyProxies.size === 0,
+            // meaning individual proxies never recovered until the entire pool was dead.
             const now = Date.now();
             for (const proxyUrl of allProxyUrls) {
                 if (healthyProxies.has(proxyUrl)) continue;
@@ -82,9 +99,8 @@ export const getFetchClient = (config: Config): {
         };
 
         const getNextProxy = (): string | null => {
-            if (healthyProxies.size === 0) {
-                recoverProxies(); // attempt to recover blacklisted proxies
-            }
+            // Always attempt recovery before selecting a proxy
+            recoverProxies();
             if (healthyProxies.size === 0) return null;
             const candidates = Array.from(healthyProxies);
             if (proxyPool.rotation === "random") {
@@ -116,7 +132,10 @@ export const getFetchClient = (config: Config): {
             failureCounts.set(proxyUrl, 0);
         };
 
-        return async (input: FetchInputParameter, init?: RequestInit) => {
+        const fn: FetchFn = async (
+            input: FetchInputParameter,
+            init?: FetchInitParameterWithClient,
+        ) => {
             const proxyUrl = getNextProxy();
             if (!proxyUrl) {
                 // All proxies blacklisted and none recovered — fail explicitly
@@ -134,24 +153,7 @@ export const getFetchClient = (config: Config): {
                     body: init?.body,
                 });
 
-                let isBlocked = fetchRes.status === 403 ||
-                    fetchRes.status === 429;
-
-                // Only check body on non-200 responses (more conservative)
-                if (isBlocked && fetchRes.body) {
-                    const reader = fetchRes.body.getReader();
-                    const { value } = await reader.read();
-                    if (value) {
-                        const text = new TextDecoder().decode(
-                            value.slice(0, 60000),
-                        ).toLowerCase();
-                        if (
-                            YOUTUBE_BLOCK_SIGNALS.some((s) => text.includes(s))
-                        ) {
-                            isBlocked = true;
-                        }
-                    }
-                }
+                const isBlocked = await checkYouTubeBlock(fetchRes);
 
                 if (isBlocked) {
                     markProxyFailure(proxyUrl);
@@ -159,24 +161,28 @@ export const getFetchClient = (config: Config): {
                     markProxySuccess(proxyUrl);
                 }
 
-                return new Response(fetchRes.body, {
-                    status: fetchRes.status,
-                    headers: fetchRes.headers,
-                });
+                return fetchRes;
             } catch (e) {
                 markProxyFailure(proxyUrl);
                 throw e;
             }
         };
+
+        cachedFetchFn = fn;
+        cachedConfigRef = config;
+        return fn;
     }
 
-    // Single proxy / IPv6 path (unchanged)
+    // Single proxy / IPv6 path
     if (proxyAddress || (ipv6Block && ipv6Enabled)) {
         const reusableClient = proxyAddress && !ipv6Block
             ? Deno.createHttpClient({ proxy: { url: proxyAddress } })
             : undefined;
 
-        return async (input: FetchInputParameter, init?: RequestInit) => {
+        const fn: FetchFn = async (
+            input: FetchInputParameter,
+            init?: FetchInitParameterWithClient,
+        ) => {
             let client: Deno.HttpClient;
             if (reusableClient) {
                 client = reusableClient;
@@ -199,16 +205,84 @@ export const getFetchClient = (config: Config): {
                 client,
                 ...init,
             });
-            return new Response(fetchRes.body, {
-                status: fetchRes.status,
-                headers: fetchRes.headers,
-            });
+
+            // Detect YouTube block signals even on single-proxy path.
+            // Previously this detection only existed in the proxy_pool path,
+            // so blocks via a single proxy or direct connection were invisible.
+            const isBlocked = await checkYouTubeBlock(fetchRes);
+            if (isBlocked) {
+                console.warn(
+                    `[WARN] YouTube block detected via single-proxy/direct path for ${input}. ` +
+                        "Consider enabling proxy_pool for automatic failover.",
+                );
+            }
+
+            return fetchRes;
         };
+
+        cachedFetchFn = fn;
+        cachedConfigRef = config;
+        return fn;
     }
 
-    return (input: FetchInputParameter, init?: FetchInitParameterWithClient) =>
-        fetchShim(config, retryOptions, input, init);
+    // No proxy path — direct fetch
+    const fn: FetchFn = (
+        input: FetchInputParameter,
+        init?: FetchInitParameterWithClient,
+    ) => fetchShim(config, retryOptions, input, init);
+
+    cachedFetchFn = fn;
+    cachedConfigRef = config;
+    return fn;
 };
+
+/**
+ * Check if a YouTube response contains bot detection signals.
+ * Works on both 403/429 responses AND 200 responses that contain
+ * "protect our community" or similar block messages in the body.
+ *
+ * Uses response.clone() to peek at the body without consuming the original,
+ * so the caller can still read the response stream normally.
+ *
+ * Returns true if a block signal is detected, false otherwise.
+ */
+async function checkYouTubeBlock(response: Response): Promise<boolean> {
+    // Fast path: 403/429 status codes almost always indicate blocks
+    if (response.status === 403 || response.status === 429) {
+        // Additionally check the body for known YouTube block signals.
+        // YouTube sometimes returns 403 with an HTML page containing
+        // "protect our community" instead of a proper API error.
+        try {
+            const cloned = response.clone();
+            const bodyText = await cloned.text();
+            const lowerBody = bodyText.slice(0, 60000).toLowerCase();
+            if (YOUTUBE_BLOCK_SIGNALS.some((s) => lowerBody.includes(s))) {
+                return true;
+            }
+        } catch {
+            // Can't read body — fall back to status-based detection
+        }
+        return true;
+    }
+
+    // YouTube also returns 200 OK with block messages in the response body
+    // (especially for Innertube API calls that return playabilityStatus errors).
+    // This is the case for the "This helps protect our community" message.
+    if (response.status === 200) {
+        try {
+            const cloned = response.clone();
+            const bodyText = await cloned.text();
+            const lowerBody = bodyText.slice(0, 60000).toLowerCase();
+            if (YOUTUBE_BLOCK_SIGNALS.some((s) => lowerBody.includes(s))) {
+                return true;
+            }
+        } catch {
+            // Can't read body — assume not blocked
+        }
+    }
+
+    return false;
+}
 
 function fetchShim(
     config: Config,
