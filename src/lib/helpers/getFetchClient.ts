@@ -64,6 +64,7 @@ export const getFetchClient = (config: Config): FetchFn => {
         const lastBlacklistTime = new Map<string, number>();
         const FAILURE_THRESHOLD = 3;
         const BLACKLIST_MS = 3_600_000; // 1 hour
+        let activeProxyUrl: string | null = null;
 
         for (const proxyUrl of proxyPool.proxies) {
             try {
@@ -82,30 +83,27 @@ export const getFetchClient = (config: Config): FetchFn => {
 
         let rrIndex = 0;
 
-        const recoverProxies = (): void => {
-            // ALWAYS check blacklisted proxies for cooldown expiry.
-            // Previously this only ran when healthyProxies.size === 0,
-            // meaning individual proxies never recovered until the entire pool was dead.
+        const getCooldownExpiredProxies = (): string[] => {
             const now = Date.now();
+            const recovered: string[] = [];
             for (const proxyUrl of allProxyUrls) {
                 if (healthyProxies.has(proxyUrl)) continue;
                 const lastBlacklist = lastBlacklistTime.get(proxyUrl) || 0;
                 if (now - lastBlacklist > BLACKLIST_MS) {
-                    logInfo(
-                        CTX.PROXY,
-                        `Recovered after cooldown: ${maskProxyUrl(proxyUrl)}`,
-                    );
-                    healthyProxies.add(proxyUrl);
-                    failureCounts.set(proxyUrl, 0);
+                    recovered.push(proxyUrl);
                 }
             }
+            return recovered;
         };
 
-        const getNextProxy = (): string | null => {
-            // Always attempt recovery before selecting a proxy
-            recoverProxies();
+        const getNextHealthyProxy = (
+            excluded: Set<string> = new Set(),
+        ): string | null => {
             if (healthyProxies.size === 0) return null;
-            const candidates = Array.from(healthyProxies);
+            const candidates = Array.from(healthyProxies).filter((proxy) =>
+                !excluded.has(proxy)
+            );
+            if (candidates.length === 0) return null;
             if (proxyPool.rotation === "random") {
                 return candidates[
                     Math.floor(Math.random() * candidates.length)
@@ -115,6 +113,52 @@ export const getFetchClient = (config: Config): FetchFn => {
             const proxy = candidates[rrIndex % candidates.length];
             rrIndex = (rrIndex + 1) % candidates.length;
             return proxy;
+        };
+
+        const probeProxyHealth = async (proxyUrl: string): Promise<boolean> => {
+            const client = proxyClients.get(proxyUrl);
+            if (!client) return false;
+
+            try {
+                const response = await fetchShim(
+                    config,
+                    retryOptions,
+                    "https://www.youtube.com/generate_204",
+                    {
+                        client,
+                        method: "GET",
+                    },
+                );
+                const isBlocked = await checkYouTubeBlock(response);
+                return !isBlocked && response.ok;
+            } catch {
+                return false;
+            }
+        };
+
+        const revalidateCooldownProxies = async (): Promise<void> => {
+            const candidates = getCooldownExpiredProxies();
+            for (const proxyUrl of candidates) {
+                const isHealthy = await probeProxyHealth(proxyUrl);
+                if (isHealthy) {
+                    healthyProxies.add(proxyUrl);
+                    failureCounts.set(proxyUrl, 0);
+                    logInfo(
+                        CTX.PROXY,
+                        `Recovered after cooldown and probe: ${
+                            maskProxyUrl(proxyUrl)
+                        }`,
+                    );
+                } else {
+                    lastBlacklistTime.set(proxyUrl, Date.now());
+                    logWarn(
+                        CTX.PROXY,
+                        `Probe failed after cooldown; keeping blacklisted: ${
+                            maskProxyUrl(proxyUrl)
+                        }`,
+                    );
+                }
+            }
         };
 
         const markProxyFailure = (proxyUrl: string) => {
@@ -131,24 +175,61 @@ export const getFetchClient = (config: Config): FetchFn => {
                 );
                 healthyProxies.delete(proxyUrl);
                 lastBlacklistTime.set(proxyUrl, Date.now());
+                if (activeProxyUrl === proxyUrl) {
+                    activeProxyUrl = null;
+                }
             }
         };
 
         const markProxySuccess = (proxyUrl: string) => {
             failureCounts.set(proxyUrl, 0);
+            activeProxyUrl = proxyUrl;
+        };
+
+        const ensureActiveProxy = async (): Promise<string | null> => {
+            await revalidateCooldownProxies();
+
+            if (activeProxyUrl && healthyProxies.has(activeProxyUrl)) {
+                return activeProxyUrl;
+            }
+
+            const excluded = new Set<string>();
+            while (excluded.size < allProxyUrls.length) {
+                const candidate = getNextHealthyProxy(excluded);
+                if (!candidate) break;
+                excluded.add(candidate);
+
+                const healthy = await probeProxyHealth(candidate);
+                if (healthy) {
+                    markProxySuccess(candidate);
+                    return candidate;
+                }
+
+                markProxyFailure(candidate);
+                if (!healthyProxies.has(candidate)) {
+                    logWarn(
+                        CTX.PROXY,
+                        `Startup/selection probe failed: ${
+                            maskProxyUrl(candidate)
+                        }`,
+                    );
+                }
+            }
+
+            return null;
         };
 
         const fn: FetchFn = async (
             input: FetchInputParameter,
             init?: FetchInitParameterWithClient,
         ) => {
-            const proxyUrl = getNextProxy();
+            const proxyUrl = await ensureActiveProxy();
             if (!proxyUrl) {
-                // All proxies blacklisted and none recovered — fail explicitly
                 throw new Error(
-                    "All proxies in the pool are blacklisted. No healthy proxy available.",
+                    "All proxies in the pool are blacklisted or unhealthy. No healthy proxy available.",
                 );
             }
+
             const client = proxyClients.get(proxyUrl)!;
 
             try {
@@ -163,6 +244,12 @@ export const getFetchClient = (config: Config): FetchFn => {
 
                 if (isBlocked) {
                     markProxyFailure(proxyUrl);
+                    logWarn(
+                        CTX.PROXY,
+                        `Detected YouTube anti-bot response on ${
+                            maskProxyUrl(proxyUrl)
+                        }. Active proxy marked unhealthy.`,
+                    );
                 } else {
                     markProxySuccess(proxyUrl);
                 }

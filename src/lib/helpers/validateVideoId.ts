@@ -11,10 +11,9 @@ const VIDEO_ID_REGEX = /^[A-Za-z0-9_-]{11}$/;
  * @returns true if the video ID is valid, false otherwise
  */
 export const validateVideoId = (videoId: string): boolean => {
-    // Handle non-string values
+    // Handle non-string values (for runtime safety even if TS says string)
     if (typeof videoId !== "string") {
         return false;
     }
-
     return VIDEO_ID_REGEX.test(videoId);
 };

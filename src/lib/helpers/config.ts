@@ -4,7 +4,9 @@ import { CTX, logError, logInfo } from "./log.ts";
 
 export const ConfigSchema = z.object({
     server: z.object({
-        port: z.number().default(Number(Deno.env.get("PORT")) || 8282),
+        port: z.number().int().min(1).max(65535).default(
+            Number(Deno.env.get("PORT")) || 8282,
+        ),
         host: z.string().default(Deno.env.get("HOST") || "127.0.0.1"),
         use_unix_socket: z.boolean().default(
             Deno.env.get("SERVER_USE_UNIX_SOCKET") === "true" || false,
@@ -37,15 +39,24 @@ export const ConfigSchema = z.object({
                 },
             ),
         secret_key: z.preprocess(
-            (val) =>
-                val === undefined
-                    ? Deno.env.get("SERVER_SECRET_KEY") || ""
-                    : val,
-            z.string().length(16).regex(
+            (val) => {
+                const envVal = Deno.env.get("SERVER_SECRET_KEY");
+                if (val === undefined || val === null || val === "") {
+                    return envVal ?? "";
+                }
+                return val;
+            },
+            z.string({
+                required_error:
+                    "SERVER_SECRET_KEY is required and must be exactly 16 alphanumeric characters.",
+            }).length(
+                16,
+                "SERVER_SECRET_KEY must be exactly 16 characters long.",
+            ).regex(
                 /^[a-zA-Z0-9]+$/,
                 "SERVER_SECRET_KEY contains invalid characters. Only alphanumeric characters (a-z, A-Z, 0-9) are allowed. Please generate a valid key using 'pwgen 16 1' or ensure your key contains only letters and numbers.",
             ),
-        ).default(undefined),
+        ),
         verify_requests: z.boolean().default(
             Deno.env.get("SERVER_VERIFY_REQUESTS") === "true" || false,
         ),
@@ -63,7 +74,7 @@ export const ConfigSchema = z.object({
         directory: z.string().default(
             Deno.env.get("CACHE_DIRECTORY") || "/var/tmp",
         ),
-        ttl_seconds: z.number().default(
+        ttl_seconds: z.number().int().min(0).max(86400).default(
             Number(Deno.env.get("CACHE_TTL_SECONDS")) || 3600,
         ),
     }).strict().default({}),
@@ -75,11 +86,11 @@ export const ConfigSchema = z.object({
         ipv6_rotation_strategy: z.string().default(
             Deno.env.get("NETWORKING_IPV6_ROTATION_STRATEGY") || "random",
         ),
-        ipv6_pool_size: z.number().default(
+        ipv6_pool_size: z.number().int().min(1).max(65536).default(
             Number(Deno.env.get("NETWORKING_IPV6_POOL_SIZE")) || 128,
         ),
         fetch: z.object({
-            timeout_ms: z.number().default(
+            timeout_ms: z.number().int().min(1000).max(300_000).default(
                 Number(Deno.env.get("NETWORKING_FETCH_TIMEOUT_MS")) || 30_000,
             ),
             retry: z.object({
@@ -87,7 +98,7 @@ export const ConfigSchema = z.object({
                     Deno.env.get("NETWORKING_FETCH_RETRY_ENABLED") === "true" ||
                         false,
                 ),
-                times: z.number().optional().default(
+                times: z.number().int().min(1).max(10).optional().default(
                     Number(Deno.env.get("NETWORKING_FETCH_RETRY_TIMES")) || 1,
                 ),
                 initial_debounce: z.number().optional().default(
@@ -124,7 +135,23 @@ export const ConfigSchema = z.object({
             enabled: z.boolean().default(false),
             rotation: z.enum(["round-robin", "random"]).default("round-robin"),
             health_check: z.boolean().default(true),
-            proxies: z.array(z.string()).default([]),
+            proxies: z.array(
+                z.string().refine(
+                    (url) => {
+                        try {
+                            const parsed = new URL(url);
+                            return ["http:", "https:", "socks5:", "socks4:"]
+                                .includes(parsed.protocol);
+                        } catch {
+                            return false;
+                        }
+                    },
+                    {
+                        message:
+                            "Each proxy must be a valid URL with http, https, socks4, or socks5 protocol",
+                    },
+                ),
+            ).default([]),
         }).strict().default({}),
     }).strict().default({}),
     jobs: z.object({
@@ -133,9 +160,61 @@ export const ConfigSchema = z.object({
                 Deno.env.get("JOBS_YOUTUBE_SESSION_PO_TOKEN_ENABLED") !==
                     "false",
             ),
-            frequency: z.string().default(
-                Deno.env.get("JOBS_YOUTUBE_SESSION_FREQUENCY") || "*/5 * * * *",
-            ),
+            frequency: z.preprocess(
+                (val) => {
+                    const envVal = Deno.env.get(
+                        "JOBS_YOUTUBE_SESSION_FREQUENCY",
+                    );
+                    if (val === undefined || val === null || val === "") {
+                        return envVal ?? "*/5 * * * *";
+                    }
+                    return val;
+                },
+                z.string()
+                    .refine(
+                        (val) => {
+                            const parts = val.trim().split(/\s+/);
+                            if (parts.length !== 5) return false;
+                            // Validate each field against allowed cron patterns
+                            const cronFieldPattern =
+                                /^(\*|\d{1,2})([-/,]\d{1,2})*$/;
+                            return parts.every((part) =>
+                                cronFieldPattern.test(part)
+                            );
+                        },
+                        {
+                            message:
+                                "JOBS_YOUTUBE_SESSION_FREQUENCY must be a valid 5-part cron expression (e.g., '*/5 * * * *')",
+                        },
+                    )
+                    .refine(
+                        (val) => {
+                            const parts = val.trim().split(/\s+/);
+                            // Bounds check: minute 0-59, hour 0-23, day 1-31, month 1-12, dow 0-7
+                            const bounds = [
+                                [0, 59],
+                                [0, 23],
+                                [1, 31],
+                                [1, 12],
+                                [0, 7],
+                            ];
+                            return parts.every((part, i) => {
+                                if (part === "*") return true;
+                                const nums = part.replace(/^\*\//, "").split(
+                                    /[,\-/]/,
+                                ).map(Number);
+                                return nums.every((n) =>
+                                    !isNaN(n) && n >= bounds[i][0] &&
+                                    n <= bounds[i][1]
+                                );
+                            });
+                        },
+                        {
+                            message:
+                                "JOBS_YOUTUBE_SESSION_FREQUENCY contains out-of-bounds values in cron fields",
+                        },
+                    ),
+            ).default("*/5 * * * *"),
         }).strict().default({}),
     }).strict().default({}),
     youtube_session: z.object({
