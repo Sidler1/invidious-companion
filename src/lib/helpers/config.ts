@@ -37,15 +37,24 @@ export const ConfigSchema = z.object({
                 },
             ),
         secret_key: z.preprocess(
-            (val) =>
-                val === undefined
-                    ? Deno.env.get("SERVER_SECRET_KEY") || ""
-                    : val,
-            z.string().length(16).regex(
+            (val) => {
+                const envVal = Deno.env.get("SERVER_SECRET_KEY");
+                if (val === undefined || val === null || val === "") {
+                    return envVal ?? "";
+                }
+                return val;
+            },
+            z.string({
+                required_error:
+                    "SERVER_SECRET_KEY is required and must be exactly 16 alphanumeric characters.",
+            }).length(
+                16,
+                "SERVER_SECRET_KEY must be exactly 16 characters long.",
+            ).regex(
                 /^[a-zA-Z0-9]+$/,
                 "SERVER_SECRET_KEY contains invalid characters. Only alphanumeric characters (a-z, A-Z, 0-9) are allowed. Please generate a valid key using 'pwgen 16 1' or ensure your key contains only letters and numbers.",
             ),
-        ).default(undefined),
+        ),
         verify_requests: z.boolean().default(
             Deno.env.get("SERVER_VERIFY_REQUESTS") === "true" || false,
         ),
@@ -133,9 +142,30 @@ export const ConfigSchema = z.object({
                 Deno.env.get("JOBS_YOUTUBE_SESSION_PO_TOKEN_ENABLED") !==
                     "false",
             ),
-            frequency: z.string().default(
-                Deno.env.get("JOBS_YOUTUBE_SESSION_FREQUENCY") || "*/5 * * * *",
-            ),
+            frequency: z.preprocess(
+                (val) => {
+                    const envVal = Deno.env.get(
+                        "JOBS_YOUTUBE_SESSION_FREQUENCY",
+                    );
+                    if (val === undefined || val === null || val === "") {
+                        return envVal ?? "*/5 * * * *";
+                    }
+                    return val;
+                },
+                z.string()
+                    .refine(
+                        (val) => {
+                            // Very basic cron validation: 5 parts separated by space
+                            // A more complete validation would use a library or a complex regex
+                            const parts = val.trim().split(/\s+/);
+                            return parts.length === 5;
+                        },
+                        {
+                            message:
+                                "JOBS_YOUTUBE_SESSION_FREQUENCY must be a valid 5-part cron expression (e.g., '*/5 * * * *')",
+                        },
+                    ),
+            ).default("*/5 * * * *"),
         }).strict().default({}),
     }).strict().default({}),
     youtube_session: z.object({
