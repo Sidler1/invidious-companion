@@ -29,7 +29,15 @@ jobs:
         uses: denoland/setup-deno@v2
         with:
           deno-version: v2.x
-
+      - name: Cache Deno dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/deno
+          key: deno-${{ runner.os }}-${{ matrix.target }}-${{ hashFiles('deno.lock') }}
+          restore-keys: |
+            deno-${{ runner.os }}-${{ matrix.target }}-
+            deno-${{ runner.os }}-
       - name: Set binary name
         id: binary-name
         run: |
