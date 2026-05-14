@@ -1,112 +1,189 @@
 # Invidious Companion
 
-Companion for [Invidious](https://github.com/iv-org/invidious) which handles video stream retrieval from YouTube servers. It acts as a proxy and helper service to ensure reliable playback and metadata fetching.
+Companion for [Invidious](https://github.com/iv-org/invidious) that handles YouTube stream retrieval and related helper
+APIs. It runs as a Deno HTTP service (Hono-based routing) and provides endpoints used by Invidious for playback,
+manifests, captions, and health/metrics.
 
-## Documentation
-- **Official Installation Guide:** [https://docs.invidious.io/installation/](https://docs.invidious.io/installation/)
-- **Wiki & Extra Documentation:** [https://github.com/iv-org/invidious-companion/wiki](https://github.com/iv-org/invidious-companion/wiki)
+## Overview
 
----
+Key responsibilities in this repository:
 
-## Features
-- YouTube video stream proxying and DASH manifest generation.
-- Support for YouTube's UMP (Universal Media Player) format.
-- IPv6 rotation to mitigate IP-based rate limiting.
-- Metrics endpoint for Prometheus/Grafana monitoring.
-- Health check endpoint.
-- Support for PO tokens (Proof of Origin).
+- Proxying YouTube video playback traffic.
+- DASH manifest generation.
+- Captions-related API helpers.
+- Optional PO token generation/refresh job.
+- Optional metrics endpoint for Prometheus/Grafana.
 
----
+Useful external docs:
+
+- Official installation docs: <https://docs.invidious.io/installation/>
+- Project wiki: <https://github.com/iv-org/invidious-companion/wiki>
+
+## Stack
+
+- **Language/runtime:** TypeScript on [Deno](https://docs.deno.com/runtime/)
+- **HTTP framework:** [Hono](https://hono.dev/)
+- **Primary integrations/libraries:** `youtubei.js`, `prom-client`, Zod (`zod`) for config validation
+- **Package/dependency management:** Deno modules via `deno.json` imports + `deno.lock`
+
+## Entry Points
+
+- Main runtime entry: `src/main.ts`
+    - Started by `deno task dev`
+    - Compiled by `deno task compile` into `./invidious_companion`
+- Route registration: `src/routes/index.ts`
+    - Companion routes are served under `server.base_path` (default: `/companion`)
+    - Misc routes include `/healthz` and optional `/metrics`
 
 ## Requirements
-- [Deno](https://docs.deno.com/runtime/) (for local development/running)
-- Docker & Docker Compose (optional, for containerized deployment)
 
----
+- Deno (project tasks are defined in `deno.json`)
+- Git (used by `deno task compile` to inject version metadata)
+- Optional: Docker / Docker Compose for containerized deployment
 
 ## Setup & Run
 
-### Environment Configuration
-The application requires a `SERVER_SECRET_KEY` for authentication. It must be exactly 16 alphanumeric characters.
+### 1) Configure environment
 
-You can set configuration via:
-1. **Environment Variables** (see [Environment Variables](#environment-variables) section).
-2. **Configuration File**: Copy `config/config.example.toml` to `config/config.toml` and edit as needed.
+`SERVER_SECRET_KEY` is required and must be exactly **16 alphanumeric characters**.
 
-### Local Development (Deno)
-To run the companion in development mode with hot-reload:
+Recommended for non-trivial setups:
+
+1. Copy `config/config.example.toml` to `config/config.toml`.
+2. Uncomment both section header and keys you use.
+3. Keep `server.secret_key` aligned with `SERVER_SECRET_KEY` in your environment/scripts.
+
+### 2) Local development (watch mode)
+
 ```bash
-SERVER_SECRET_KEY=YOUR_16_CHAR_KEY deno task dev
+SERVER_SECRET_KEY=aaaaaaaaaaaaaaaa deno task dev
 ```
 
-### Build & Compile
-To compile the project into a single executable:
+By default, the service listens at `http://127.0.0.1:8282/companion`.
+
+### 3) Compile executable
+
 ```bash
 deno task compile
 ```
-This generates an `invidious_companion` binary in the project root.
 
-### Docker
-To build and run using Docker Compose:
+Produces `./invidious_companion` in the repository root.
+
+### 4) Docker (optional)
+
 ```bash
-docker-compose up -d
+docker compose up -d
 ```
-*Note: Ensure you have configured your environment variables or `config/config.toml` before running.*
 
----
+> If your Docker installation only supports legacy syntax, use `docker-compose up -d`.
 
-## Available Scripts (Deno Tasks)
-- `deno task dev`: Launch Invidious companion in debug mode with watch enabled.
-- `deno task compile`: Compile the project into a single executable binary.
-- `deno task test`: Run all tests.
-- `deno task format`: Format all TypeScript files.
-- `deno task lint`: Lint the codebase.
-- `deno task check`: Type-check the codebase.
+## Scripts (Deno tasks)
 
----
+Defined in `deno.json`:
+
+- `deno task dev` — run `src/main.ts` in watch mode with required runtime permissions.
+- `deno task compile` — compile `src/main.ts` to `invidious_companion` and inject git version metadata.
+- `deno task test` — run test suite with required permissions.
+- `deno task format` — check formatting (`deno fmt --check src/**`).
+- `deno task lint` — lint source (`deno lint src/**`).
+- `deno task check` — type-check source (`deno check src/**`).
 
 ## Environment Variables
-The following environment variables can be used to configure the application. Most of these can also be set in `config/config.toml`.
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `PORT` | `8282` | Port to listen on. |
-| `HOST` | `127.0.0.1` | Host to bind to. |
-| `SERVER_SECRET_KEY` | (Required) | 16-character alphanumeric secret key for Bearer Auth. |
-| `SERVER_USE_UNIX_SOCKET` | `false` | Enable listening on a Unix socket. |
-| `SERVER_UNIX_SOCKET_PATH` | `/tmp/invidious-companion.sock` | Path to the Unix socket. |
-| `SERVER_BASE_PATH` | `/companion` | Base path for all routes. |
-| `SERVER_VERIFY_REQUESTS` | `false` | Enable request verification. |
-| `SERVER_ENCRYPT_QUERY_PARAMS` | `false` | Enable encryption of query parameters. |
-| `SERVER_ENABLE_METRICS` | `false` | Enable Prometheus metrics at `/metrics`. |
-| `CACHE_ENABLED` | `true` | Enable caching for YouTube.js. |
-| `CACHE_DIRECTORY` | `/var/tmp` | Directory for cache storage. |
-| `PROXY` | `null` | Outgoing proxy URL (supports HTTP/HTTPS). |
-| `NETWORKING_IPV6_BLOCK` | `null` | IPv6 block for IP rotation (e.g., `2001:db8::/64`). |
-| `NETWORKING_VIDEOPLAYBACK_UMP` | `false` | Enable YouTube's UMP format. |
-| `JOBS_YOUTUBE_SESSION_PO_TOKEN_ENABLED` | `true` | Enable periodic PO token generation. |
-| `YOUTUBE_SESSION_COOKIES` | `""` | YouTube cookies for authenticated requests. |
+Most settings can be provided either through environment variables or `config/config.toml`.
 
----
+### Required
 
-## Project Structure
-- `src/main.ts`: Application entry point.
-- `src/routes/`: Route handlers (Hono).
-- `src/lib/helpers/`: Utility functions (config, metrics, IP rotation, etc.).
-- `src/lib/jobs/`: Background tasks (PO token refresh).
-- `src/tests/`: Test suite.
-- `config/`: Configuration examples and default settings.
-- `Dockerfile` & `docker-compose.yaml`: Containerization setup.
+| Variable            | Description                                           |
+|---------------------|-------------------------------------------------------|
+| `SERVER_SECRET_KEY` | Required. Must be exactly 16 alphanumeric characters. |
 
----
+### Common server/runtime
+
+| Variable                      | Default                         | Description                                 |
+|-------------------------------|---------------------------------|---------------------------------------------|
+| `PORT`                        | `8282`                          | HTTP port (when not using Unix socket).     |
+| `HOST`                        | `127.0.0.1`                     | HTTP bind host.                             |
+| `SERVER_USE_UNIX_SOCKET`      | `false`                         | Listen on Unix socket instead of TCP.       |
+| `SERVER_UNIX_SOCKET_PATH`     | `/tmp/invidious-companion.sock` | Unix socket path.                           |
+| `SERVER_BASE_PATH`            | `/companion`                    | Base route prefix for companion endpoints.  |
+| `SERVER_VERIFY_REQUESTS`      | `false`                         | Enable request verification behavior.       |
+| `SERVER_ENCRYPT_QUERY_PARAMS` | `false`                         | Enable query parameter encryption handling. |
+| `SERVER_ENABLE_METRICS`       | `false`                         | Expose `/metrics`.                          |
+| `CONFIG_FILE`                 | `config/config.toml`            | Override config file location.              |
+
+### Cache/networking/jobs/session
+
+| Variable                                             | Default       |
+|------------------------------------------------------|---------------|
+| `CACHE_ENABLED`                                      | `true`        |
+| `CACHE_DIRECTORY`                                    | `/var/tmp`    |
+| `CACHE_TTL_SECONDS`                                  | `3600`        |
+| `PROXY`                                              | `null`        |
+| `NETWORKING_IPV6_BLOCK`                              | `null`        |
+| `NETWORKING_IPV6_ROTATION_STRATEGY`                  | `random`      |
+| `NETWORKING_IPV6_POOL_SIZE`                          | `128`         |
+| `NETWORKING_FETCH_TIMEOUT_MS`                        | `30000`       |
+| `NETWORKING_FETCH_RETRY_ENABLED`                     | `false`       |
+| `NETWORKING_FETCH_RETRY_TIMES`                       | `1`           |
+| `NETWORKING_FETCH_RETRY_INITIAL_DEBOUNCE`            | `0`           |
+| `NETWORKING_FETCH_RETRY_DEBOUNCE_MULTIPLIER`         | `0`           |
+| `NETWORKING_VIDEOPLAYBACK_UMP`                       | `false`       |
+| `NETWORKING_VIDEOPLAYBACK_VIDEO_FETCH_CHUNK_SIZE_MB` | `5`           |
+| `JOBS_YOUTUBE_SESSION_PO_TOKEN_ENABLED`              | `true`        |
+| `JOBS_YOUTUBE_SESSION_FREQUENCY`                     | `*/5 * * * *` |
+| `YOUTUBE_SESSION_OAUTH_ENABLED`                      | `false`       |
+| `YOUTUBE_SESSION_COOKIES`                            | `""`          |
+| `YOUTUBE_SESSION_PLAYER_ID`                          | `""`          |
+
+Additional runtime variable used by startup/import logic:
+
+| Variable                    | Description                                                                                    |
+|-----------------------------|------------------------------------------------------------------------------------------------|
+| `GET_FETCH_CLIENT_LOCATION` | Overrides module location for `getFetchClient` import in `src/main.ts` (advanced/debug usage). |
 
 ## Tests
-To run the test suite:
+
+Run the full suite:
+
 ```bash
 deno task test
 ```
 
----
+Typical targeted test run while iterating:
+
+```bash
+deno test src/tests/<file> --allow-import=github.com:443,jsr.io:443,cdn.jsdelivr.net:443,esm.sh:443,deno.land:443 --allow-net --allow-env --allow-sys=hostname --allow-read=.,/var/tmp/youtubei.js,/tmp/invidious-companion.sock --allow-write=/var/tmp/youtubei.js
+```
+
+## Project Structure
+
+```text
+.
+├── config/
+│   └── config.example.toml
+├── src/
+│   ├── main.ts
+│   ├── constants.ts
+│   ├── routes/
+│   │   ├── index.ts
+│   │   ├── health.ts
+│   │   ├── metrics.ts
+│   │   ├── videoPlaybackProxy.ts
+│   │   ├── invidious_routes/
+│   │   └── youtube_api_routes/
+│   ├── lib/
+│   │   ├── helpers/
+│   │   ├── jobs/
+│   │   └── types/
+│   └── tests/
+├── deno.json
+├── deno.lock
+├── Dockerfile
+└── docker-compose.yaml
+```
 
 ## License
-This project is licensed under the terms of the LICENSE file included in the repository.
+
+This project is licensed under the **GNU Affero General Public License v3.0** (`LICENSE`).
+
