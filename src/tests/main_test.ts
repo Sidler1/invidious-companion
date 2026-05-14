@@ -4,9 +4,9 @@ const { run, tokenMinterReady } = await import("../main.ts");
 const { parseConfig } = await import("../lib/helpers/config.ts");
 const config = await parseConfig();
 
-import { dashManifest } from "./dashManifest.ts";
-import { youtubePlayer } from "./youtubePlayer.ts";
-import { latestVersion } from "./latestVersion.ts";
+import { dashManifest } from "./dashManifest_test.ts";
+import { youtubePlayer } from "./youtubePlayer_test.ts";
+import { latestVersion } from "./latestVersion_test.ts";
 
 Deno.test({
     name: "Checking if Invidious companion works",

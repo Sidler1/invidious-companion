@@ -1,5 +1,5 @@
 import { IRawResponse } from "youtubei.js";
-import { Counter, Registry } from "prom-client";
+import { Counter, Histogram, Registry } from "prom-client";
 
 export class Metrics {
     private METRICS_PREFIX = "invidious_companion_";
@@ -9,6 +9,19 @@ export class Metrics {
         return new Counter({
             name: `${this.METRICS_PREFIX}${name}`,
             help: help || "No help has been provided for this metric",
+            registers: [this.register],
+        });
+    }
+
+    public createHistogram(
+        name: string,
+        help: string,
+        buckets?: number[],
+    ): Histogram {
+        return new Histogram({
+            name: `${this.METRICS_PREFIX}${name}`,
+            help,
+            buckets: buckets || [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10],
             registers: [this.register],
         });
     }
@@ -86,6 +99,36 @@ export class Metrics {
     public poTokenGenerationSuccess = this.createCounter(
         "potoken_generation_success_total",
         "Number of successful PO token generations",
+    );
+
+    public upstreamFailures = this.createCounter(
+        "upstream_failures_total",
+        "Number of failed upstream requests to YouTube",
+    );
+
+    public upstreamRetries = this.createCounter(
+        "upstream_retries_total",
+        "Number of retried upstream requests to YouTube",
+    );
+
+    public proxySelections = this.createCounter(
+        "proxy_selections_total",
+        "Number of proxy selection events in the proxy pool",
+    );
+
+    public proxyBlacklists = this.createCounter(
+        "proxy_blacklists_total",
+        "Number of times a proxy was blacklisted due to failures",
+    );
+
+    public proxyRecoveries = this.createCounter(
+        "proxy_recoveries_total",
+        "Number of times a blacklisted proxy recovered after cooldown",
+    );
+
+    public requestLatency = this.createHistogram(
+        "request_latency_seconds",
+        "Request latency in seconds",
     );
 
     private innertubeFailedRequest = this.createCounter(

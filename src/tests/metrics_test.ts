@@ -30,6 +30,46 @@ Deno.test("Metrics - new counters exist and are incrementable", () => {
     assertExists(metrics.ipv6Fallback, "ipv6Fallback counter should exist");
 });
 
+Deno.test("Metrics - new upstream/proxy counters exist", () => {
+    const metrics = new Metrics();
+
+    assertExists(
+        metrics.upstreamFailures,
+        "upstreamFailures counter should exist",
+    );
+    metrics.upstreamFailures.inc();
+
+    assertExists(
+        metrics.upstreamRetries,
+        "upstreamRetries counter should exist",
+    );
+    metrics.upstreamRetries.inc();
+
+    assertExists(
+        metrics.proxySelections,
+        "proxySelections counter should exist",
+    );
+    metrics.proxySelections.inc();
+
+    assertExists(
+        metrics.proxyBlacklists,
+        "proxyBlacklists counter should exist",
+    );
+    metrics.proxyBlacklists.inc();
+
+    assertExists(
+        metrics.proxyRecoveries,
+        "proxyRecoveries counter should exist",
+    );
+    metrics.proxyRecoveries.inc();
+
+    assertExists(
+        metrics.requestLatency,
+        "requestLatency histogram should exist",
+    );
+    metrics.requestLatency.observe(0.5);
+});
+
 Deno.test("Metrics - registry contains all expected metrics", () => {
     const metrics = new Metrics();
     const metricNames = Array.from(metrics.register.getMetricsAsArray()).map(
@@ -40,6 +80,12 @@ Deno.test("Metrics - registry contains all expected metrics", () => {
         "invidious_companion_graceful_shutdowns_total",
         "invidious_companion_video_playback_requests_total",
         "invidious_companion_potoken_generation_success_total",
+        "invidious_companion_upstream_failures_total",
+        "invidious_companion_upstream_retries_total",
+        "invidious_companion_proxy_selections_total",
+        "invidious_companion_proxy_blacklists_total",
+        "invidious_companion_proxy_recoveries_total",
+        "invidious_companion_request_latency_seconds",
     ];
 
     for (const expected of expectedNewMetrics) {

@@ -2,17 +2,9 @@ import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { decryptQuery } from "../lib/helpers/encryptQuery.ts";
 
-let getFetchClientLocation = "getFetchClient";
-if (Deno.env.get("GET_FETCH_CLIENT_LOCATION")) {
-    if (Deno.env.has("DENO_COMPILED")) {
-        getFetchClientLocation = Deno.mainModule.replace("src/main.ts", "") +
-            Deno.env.get("GET_FETCH_CLIENT_LOCATION");
-    } else {
-        getFetchClientLocation = Deno.env.get(
-            "GET_FETCH_CLIENT_LOCATION",
-        ) as string;
-    }
-}
+import { resolveAndValidateFetchClientLocation } from "../lib/helpers/dynamicImportValidation.ts";
+
+const getFetchClientLocation = resolveAndValidateFetchClientLocation();
 const { getFetchClient } = await import(getFetchClientLocation);
 
 const videoPlaybackProxy = new Hono();

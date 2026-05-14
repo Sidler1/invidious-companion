@@ -10,6 +10,7 @@ import videoPlaybackProxy from "./videoPlaybackProxy.ts";
 import type { Config } from "../lib/helpers/config.ts";
 import metrics from "./metrics.ts";
 import health from "./health.ts";
+import readiness from "./readiness.ts";
 import { compactLogger } from "./compactLogger.ts";
 
 export const companionRoutes = (
@@ -43,6 +44,7 @@ export const miscRoutes = (
     config: Config,
 ) => {
     app.route("/healthz", health);
+    app.route("/readyz", readiness);
     if (config.server.enable_metrics) {
         app.route("/metrics", metrics);
     }
