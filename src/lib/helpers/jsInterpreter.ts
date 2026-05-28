@@ -8,12 +8,18 @@ export const jsInterpreter = Platform.shim.eval = async (
 ) => {
     const properties = [];
 
+    // JSON.stringify produces a safely-escaped JS string literal. Plain
+    // interpolation ("${env.n}") would allow a value containing a quote or
+    // paren to break out of the string and inject arbitrary code into the
+    // Function body below.
     if (env.n) {
-        properties.push(`n: exportedVars.nFunction("${env.n}")`);
+        properties.push(`n: exportedVars.nFunction(${JSON.stringify(env.n)})`);
     }
 
     if (env.sig) {
-        properties.push(`sig: exportedVars.sigFunction("${env.sig}")`);
+        properties.push(
+            `sig: exportedVars.sigFunction(${JSON.stringify(env.sig)})`,
+        );
     }
 
     const code = `${data.output}\nreturn { ${properties.join(", ")} }`;

@@ -74,19 +74,19 @@ Deno.test("Config negative paths", async (t) => {
         );
     });
 
-    await t.step("rejects cache ttl > 86400", async () => {
+    await t.step("rejects cache ttl > 21600", async () => {
         await expectConfigError(
             `[server]\nsecret_key = "aaaaaaaaaaaaaaaa"\n\n[cache]\nttl_seconds = 100000\n`,
-            "Number must be less than or equal to 86400",
-            "ttl > 86400",
+            "Number must be less than or equal to 21600",
+            "ttl > 21600",
         );
     });
 
-    await t.step("rejects ipv6_pool_size = 0", async () => {
+    await t.step("rejects unknown networking key", async () => {
         await expectConfigError(
             `[server]\nsecret_key = "aaaaaaaaaaaaaaaa"\n\n[networking]\nipv6_pool_size = 0\n`,
-            "Number must be greater than or equal to 1",
-            "ipv6_pool_size = 0",
+            "Unrecognized key",
+            "unknown networking key",
         );
     });
 

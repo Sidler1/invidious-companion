@@ -9,8 +9,10 @@ import type { HonoVariables } from "../lib/types/HonoVariables.ts";
  * are available before accepting traffic.
  *
  * Checks:
- * - innertubeClient is set in context (YouTube session is initialized)
  * - config is loaded
+ * - innertubeClient is set in context (YouTube session is initialized)
+ * - tokenMinter is ready when PO tokens are enabled (player/DASH/captions
+ *   endpoints return 503 until it is, so we must not report ready before then)
  */
 const readiness = new Hono<{ Variables: HonoVariables }>();
 
@@ -27,6 +29,14 @@ readiness.get("/", (c) => {
     const innertubeClient = c.get("innertubeClient");
     checks["innertube_client"] = !!innertubeClient;
     if (!innertubeClient) allReady = false;
+
+    // When PO tokens are enabled, the token minter must be initialized before
+    // the service can actually serve player/DASH/captions traffic.
+    if (config?.jobs?.youtube_session?.po_token_enabled) {
+        const tokenMinter = c.get("tokenMinter");
+        checks["token_minter"] = !!tokenMinter;
+        if (!tokenMinter) allReady = false;
+    }
 
     const status = allReady ? 200 : 503;
     return new Response(

@@ -1,5 +1,6 @@
 import { retry, type RetryOptions } from "@std/async";
 import type { Config } from "./config.ts";
+import type { Metrics } from "./metrics.ts";
 import { generateRandomIPv6 } from "./ipv6Rotation.ts";
 import { CTX, logInfo, logWarn } from "./log.ts";
 
@@ -13,6 +14,9 @@ type FetchFn = (
     init?: FetchInitParameterWithClient,
 ) => FetchReturn;
 
+// Process-wide latch: if generating an IPv6 source address ever fails (host
+// has no IPv6 support), we disable rotation permanently rather than retrying
+// on every request. Intentionally one-way — recovery requires a restart.
 let ipv6Enabled = true;
 
 const YOUTUBE_BLOCK_SIGNALS = [
@@ -34,7 +38,14 @@ const YOUTUBE_BLOCK_SIGNALS = [
 let cachedFetchFn: FetchFn | null = null;
 let cachedConfigRef: Config | null = null;
 
-export const getFetchClient = (config: Config): FetchFn => {
+// Module-level metrics handle. Set on the first call that provides it (from
+// main.ts at startup) and shared by all internal helpers in this isolate.
+// Note: the PO-token worker runs in a separate isolate and has no metrics.
+let metricsRef: Metrics | undefined;
+
+export const getFetchClient = (config: Config, metrics?: Metrics): FetchFn => {
+    if (metrics) metricsRef = metrics;
+
     // Return cached instance if the same config object is used
     if (cachedFetchFn && cachedConfigRef === config) {
         return cachedFetchFn;
@@ -143,6 +154,7 @@ export const getFetchClient = (config: Config): FetchFn => {
                 if (isHealthy) {
                     healthyProxies.add(proxyUrl);
                     failureCounts.set(proxyUrl, 0);
+                    metricsRef?.proxyRecoveries.inc();
                     logInfo(
                         CTX.PROXY,
                         `Recovered after cooldown and probe: ${
@@ -167,6 +179,7 @@ export const getFetchClient = (config: Config): FetchFn => {
             failureCounts.set(proxyUrl, count);
 
             if (count >= FAILURE_THRESHOLD) {
+                metricsRef?.proxyBlacklists.inc();
                 logWarn(
                     CTX.PROXY,
                     `Blacklisted for 1h: ${
@@ -229,6 +242,7 @@ export const getFetchClient = (config: Config): FetchFn => {
                     "All proxies in the pool are blacklisted or unhealthy. No healthy proxy available.",
                 );
             }
+            metricsRef?.proxySelections.inc();
 
             const client = proxyClients.get(proxyUrl)!;
 
@@ -256,6 +270,7 @@ export const getFetchClient = (config: Config): FetchFn => {
 
                 return fetchRes;
             } catch (e) {
+                metricsRef?.upstreamFailures.inc();
                 markProxyFailure(proxyUrl);
                 throw e;
             }
@@ -287,8 +302,10 @@ export const getFetchClient = (config: Config): FetchFn => {
                         clientOptions.localAddress = generateRandomIPv6(
                             ipv6Block,
                         );
+                        metricsRef?.ipv6AddressGenerated.inc();
                     } catch {
                         ipv6Enabled = false;
+                        metricsRef?.ipv6Fallback.inc();
                     }
                 }
                 client = Deno.createHttpClient(clientOptions);
@@ -416,13 +433,17 @@ function fetchShim(
 ): FetchReturn {
     const fetchTimeout = config.networking.fetch?.timeout_ms;
     const fetchRetry = config.networking.fetch?.retry?.enabled;
-    const callFetch = () =>
-        fetch(input, {
+    let attempt = 0;
+    const callFetch = () => {
+        // Every invocation after the first is a retry.
+        if (attempt++ > 0) metricsRef?.upstreamRetries.inc();
+        return fetch(input, {
             signal: fetchTimeout
                 ? AbortSignal.timeout(Number(fetchTimeout))
                 : null,
             ...(init || {}),
         });
+    };
     return fetchRetry ? retry(callFetch, retryOptions) : callFetch();
 }
 

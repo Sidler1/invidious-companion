@@ -28,20 +28,48 @@ interface TokenGeneratorWorker extends Omit<Worker, "postMessage"> {
 
 const workers: TokenGeneratorWorker[] = [];
 
+// Upper bound on how long a single content-token mint may take. Without it, a
+// worker that dies or stalls leaves the mint promise pending forever — and
+// with request single-flighting that hung promise poisons the videoId for all
+// later callers until restart.
+const MINT_TIMEOUT_MS = 10_000;
+
 function createMinter(worker: TokenGeneratorWorker) {
     return (videoId: string): Promise<string> => {
-        const { promise, resolve } = Promise.withResolvers<string>();
+        const { promise, resolve, reject } = Promise.withResolvers<string>();
         const requestId = crypto.randomUUID();
+
+        const cleanup = () => {
+            worker.removeEventListener("message", listener);
+            clearTimeout(timer);
+        };
+
         const listener = (message: MessageEvent) => {
             const parsedMessage = OutputMessageSchema.parse(message.data);
             if (
                 parsedMessage.type === "content-token" &&
                 parsedMessage.requestId === requestId
             ) {
-                worker.removeEventListener("message", listener);
+                cleanup();
                 resolve(parsedMessage.contentToken);
+            } else if (
+                parsedMessage.type === "error" &&
+                parsedMessage.requestId === requestId
+            ) {
+                cleanup();
+                reject(new Error(String(parsedMessage.error)));
             }
         };
+
+        const timer = setTimeout(() => {
+            cleanup();
+            reject(
+                new Error(
+                    `Content-token mint timed out after ${MINT_TIMEOUT_MS}ms for ${videoId}`,
+                ),
+            );
+        }, MINT_TIMEOUT_MS);
+
         worker.addEventListener("message", listener);
         worker.postMessage({
             type: "content-token-request",
@@ -82,7 +110,11 @@ export const poTokenGenerate = (
             worker.postMessage({ type: "initialise", config });
         }
 
-        if (parsedMessage.type === "error") {
+        // Only fatal setup/initialise errors (no requestId) tear down the
+        // worker. Per-request mint errors carry a requestId and are handled by
+        // the dedicated listener in createMinter, so they must not kill the
+        // whole session here.
+        if (parsedMessage.type === "error" && !parsedMessage.requestId) {
             logError(CTX.PO_TOKEN, `Worker error: ${parsedMessage.error}`);
             worker.terminate();
             reject(parsedMessage.error);
@@ -107,6 +139,7 @@ export const poTokenGenerate = (
                     metrics,
                 });
                 logInfo(CTX.PO_TOKEN, "Successfully generated");
+                metrics?.poTokenGenerationSuccess.inc();
                 const numberToKill = workers.length - 1;
                 for (let i = 0; i < numberToKill; i++) {
                     const workerToKill = workers.shift();
@@ -160,7 +193,9 @@ async function checkToken({
             .map(({ value }) => value);
 
         if (videos.length === 0) {
-            new Error("No videos with valid IDs found in search results");
+            throw new Error(
+                "No videos with valid IDs found in search results",
+            );
         }
 
         const maxAttempts = Math.min(3, videos.length);
@@ -223,13 +258,13 @@ async function checkToken({
                     `Validation failed for ${videoId}: ${err}`,
                 );
                 if (attempt === maxAttempts - 1) {
-                    new Error(
+                    throw new Error(
                         "Failed to validate PO token with any available videos",
                     );
                 }
             }
         }
-        new Error(
+        throw new Error(
             "Failed to validate PO token: all validation attempts returned non-200 status codes",
         );
     } catch (err) {

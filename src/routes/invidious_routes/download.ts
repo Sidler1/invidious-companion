@@ -68,10 +68,13 @@ export default function getDownloadHandler(app: Hono) {
         }
 
         if ("label" in downloadWidgetData) {
+            const captionsQuery = new URLSearchParams();
+            captionsQuery.set("label", downloadWidgetData.label);
+            // Forward the check param so the internal captions request also
+            // passes verifyRequest when verify_requests is enabled.
+            if (check) captionsQuery.set("check", check);
             return await app.request(
-                `${config.server.base_path}/api/v1/captions/${videoId}?label=${
-                    encodeURIComponent(downloadWidgetData.label)
-                }`,
+                `${config.server.base_path}/api/v1/captions/${videoId}?${captionsQuery.toString()}`,
             );
         } else {
             const itag = downloadWidgetData.itag;
