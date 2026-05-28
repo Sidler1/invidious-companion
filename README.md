@@ -126,9 +126,11 @@ Most settings can be provided either through environment variables or `config/co
 | `NETWORKING_FETCH_RETRY_TIMES`                       | `1`           |
 | `NETWORKING_FETCH_RETRY_INITIAL_DEBOUNCE`            | `0`           |
 | `NETWORKING_FETCH_RETRY_DEBOUNCE_MULTIPLIER`         | `0`           |
-| `NETWORKING_RATE_LIMIT_ENABLED`                      | `false`       |
+| `CACHE_NEGATIVE_TTL_SECONDS`                         | `30`          |
+| `NETWORKING_RATE_LIMIT_ENABLED`                      | `true`        |
 | `NETWORKING_RATE_LIMIT_MAX_CONCURRENT`               | `8`           |
 | `NETWORKING_RATE_LIMIT_MIN_INTERVAL_MS`              | `0`           |
+| `NETWORKING_PROXY_POOL_SWITCH_ON_LIMIT`              | `false`       |
 | `NETWORKING_VIDEOPLAYBACK_UMP`                       | `false`       |
 | `JOBS_YOUTUBE_SESSION_PO_TOKEN_ENABLED`              | `true`        |
 | `JOBS_YOUTUBE_SESSION_FREQUENCY`                     | `*/5 * * * *` |
@@ -147,20 +149,37 @@ Additional runtime variable used by startup/import logic:
 
 ### Anti-blocking notes
 
-- **Proxy pool is failover-only, not load-balancing.** When `[networking.proxy_pool]`
-  is enabled, one proxy is pinned as the active egress and *all* traffic goes
-  through it; `rotation` (`round-robin` | `random`) only decides which proxy
-  becomes active next after the current one is blacklisted (3 failures, a
-  detected block, or a failed health probe). This keeps a logical session
-  egressing from a single IP so PO tokens, `visitor_data`, and stream requests
-  stay IP-consistent. To spread load, run multiple instances.
+- **GVS PO token on stream URLs.** The session PO token (minted from
+  `visitor_data`) is appended as `&pot=` to deciphered WEB/MWEB/TV
+  `videoplayback` URLs. Web-family clients are throttled/403'd by the CDN
+  without it, which is a major driver of stream failures and IP rotation. Goes
+  hand-in-hand with running on a **residential IP**: with a valid GVS pot a
+  residential instance can often serve playback with no proxy at all.
+- **Proxy pool is failover-only by default, not load-balancing.** When
+  `[networking.proxy_pool]` is enabled, one proxy is pinned as the active egress
+  and *all* traffic goes through it; `rotation` (`round-robin` | `random`) only
+  decides which proxy becomes active next after the current one is blacklisted
+  (3 failures, a detected block, or a failed health probe). This keeps a logical
+  session egressing from a single IP so PO tokens, `visitor_data`, and stream
+  requests stay IP-consistent.
+- **`NETWORKING_PROXY_POOL_SWITCH_ON_LIMIT`** (default off) turns the pool into
+  rate-limit-aware load spreading: when the active proxy's rate-limit gate is
+  saturated, traffic hops to the next healthy proxy with spare capacity. Each
+  proxy keeps its **own session** (`visitor_data` + PO token minted from that
+  proxy's IP), swapped in lockstep with the active proxy, so every egress IP
+  presents its own consistent tokens. Requires rate limiting enabled.
 - **Session/IP consistency.** In proxy-pool mode the PO-token worker is pinned
   to the same active proxy the request path uses, so BotGuard attestation and
   playback share one IP. Use **residential/mobile** proxies where possible —
   datacenter IPs are blocked aggressively.
 - **`NETWORKING_RATE_LIMIT_*`** caps concurrent requests / spaces out request
-  starts to a single egress IP. Off by default; enable it if you see blocks
-  under load.
+  starts to a single egress IP. **Enabled by default** (`max_concurrent = 8`)
+  as a baseline anti-block measure; raise `min_interval_ms` for stricter,
+  more human-like pacing. With the proxy pool active each proxy is throttled
+  independently.
+- **`CACHE_NEGATIVE_TTL_SECONDS`** briefly caches non-OK player responses
+  (unavailable/unplayable videos) so repeated requests for a bad video don't
+  re-hit YouTube on every call. `0` disables.
 - **`JOBS_YOUTUBE_SESSION_LIFETIME_HOURS`** keeps a generated `visitor_data`
   alive for the given window instead of churning it on every `frequency` tick;
   the cron then only re-attests once the session ages out. A detected block

@@ -51,6 +51,7 @@ Deno.test({
                     enabled: true,
                     rotation: "round-robin" as const,
                     health_check: true,
+                    switch_proxy_on_limit: false,
                     proxies: ["http://user:pass@127.0.0.1:1"],
                 },
             },
@@ -123,6 +124,7 @@ Deno.test({
                         enabled: true,
                         rotation: "round-robin" as const,
                         health_check: true,
+                        switch_proxy_on_limit: false,
                         proxies: [
                             "http://u:p@proxy1:8080",
                             "http://u:p@proxy2:8080",
@@ -230,6 +232,7 @@ Deno.test({
                         enabled: true,
                         rotation: "round-robin" as const,
                         health_check: true,
+                        switch_proxy_on_limit: false,
                         proxies: [
                             "http://u:p@proxy1:8080",
                             "http://u:p@proxy2:8080",
@@ -346,6 +349,7 @@ Deno.test({
                         enabled: true,
                         rotation: "round-robin" as const,
                         health_check: true,
+                        switch_proxy_on_limit: false,
                         proxies: ["http://u:p@proxy1:8080"],
                     },
                 },
