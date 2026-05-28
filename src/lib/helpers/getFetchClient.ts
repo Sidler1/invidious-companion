@@ -51,6 +51,16 @@ export function setOnYouTubeBlock(cb: () => void): void {
     onYouTubeBlock = cb;
 }
 
+// Invoked (main isolate only) whenever the proxy pool's active egress proxy
+// changes AND switch_proxy_on_limit is enabled. main.ts uses it to swap in the
+// per-proxy session (visitor_data + PO token) bound to the new egress IP, so a
+// rate-limit-driven hop keeps the session IP-consistent. Not fired when the
+// flag is off — the pool then behaves as pure failover, unchanged.
+let onActiveProxyChange: ((proxyUrl: string) => void) | undefined;
+export function setOnActiveProxyChange(cb: (proxyUrl: string) => void): void {
+    onActiveProxyChange = cb;
+}
+
 // When the proxy pool is active, this points at its proxy selector so the
 // session bootstrap (PO-token worker) can be pinned to the same egress IP the
 // request path is using. Null when no pool is configured.
@@ -124,6 +134,35 @@ export const getFetchClient = (config: Config, metrics?: Metrics): FetchFn => {
         const FAILURE_THRESHOLD = 3;
         const BLACKLIST_MS = 3_600_000; // 1 hour
         let activeProxyUrl: string | null = null;
+
+        const switchProxyOnLimit = proxyPool.switch_proxy_on_limit &&
+            !!rl?.enabled;
+
+        // Per-proxy rate gates: throttle each egress IP independently rather
+        // than process-wide. With these in place the shared module-level gate
+        // would double-count, so it is disabled on the pool path.
+        const proxyGates = new Map<string, FetchGate>();
+        if (rl?.enabled) {
+            fetchGate = undefined;
+            for (const proxyUrl of allProxyUrls) {
+                proxyGates.set(
+                    proxyUrl,
+                    new FetchGate(rl.max_concurrent, rl.min_interval_ms),
+                );
+            }
+        }
+
+        // Set the active egress proxy, notifying main.ts on an actual change so
+        // it can swap in that proxy's session. Only fires when
+        // switch_proxy_on_limit is on; otherwise the pool is pure failover and
+        // behaviour is unchanged.
+        const setActiveProxy = (proxyUrl: string): void => {
+            const changed = activeProxyUrl !== proxyUrl;
+            activeProxyUrl = proxyUrl;
+            if (changed && switchProxyOnLimit) {
+                onActiveProxyChange?.(proxyUrl);
+            }
+        };
 
         for (const proxyUrl of proxyPool.proxies) {
             try {
@@ -244,7 +283,7 @@ export const getFetchClient = (config: Config, metrics?: Metrics): FetchFn => {
 
         const markProxySuccess = (proxyUrl: string) => {
             failureCounts.set(proxyUrl, 0);
-            activeProxyUrl = proxyUrl;
+            setActiveProxy(proxyUrl);
         };
 
         const ensureActiveProxy = async (
@@ -304,8 +343,27 @@ export const getFetchClient = (config: Config, metrics?: Metrics): FetchFn => {
             let sawBlock = false;
 
             for (let attempt = 0; attempt < maxAttempts; attempt++) {
-                const proxyUrl = await ensureActiveProxy(excluded);
+                let proxyUrl = await ensureActiveProxy(excluded);
                 if (!proxyUrl) break;
+
+                // Rate-limit-aware hop: if the chosen proxy's gate is currently
+                // saturated, prefer a healthy proxy that still has capacity
+                // instead of queuing behind the busy one. This is what lets
+                // sustained load fan out across the pool. setActiveProxy fires
+                // the session swap so the new egress carries its own session.
+                if (
+                    switchProxyOnLimit && proxyGates.get(proxyUrl)?.saturated()
+                ) {
+                    const candidates = Array.from(healthyProxies).filter((p) =>
+                        !excluded.has(p) && !proxyGates.get(p)?.saturated()
+                    );
+                    if (candidates.length > 0) {
+                        const alt = candidates[rrIndex % candidates.length];
+                        rrIndex = (rrIndex + 1) % candidates.length;
+                        setActiveProxy(alt);
+                        proxyUrl = alt;
+                    }
+                }
                 metricsRef?.proxySelections.inc();
 
                 const client = proxyClients.get(proxyUrl)!;
@@ -321,6 +379,7 @@ export const getFetchClient = (config: Config, metrics?: Metrics): FetchFn => {
                             method: init?.method,
                             body: init?.body,
                         },
+                        proxyGates.get(proxyUrl),
                     );
 
                     const isBlocked = await checkYouTubeBlock(fetchRes);
@@ -523,9 +582,13 @@ function fetchShim(
     retryOptions: RetryOptions,
     input: FetchInputParameter,
     init?: FetchInitParameterWithClient,
+    // Per-proxy rate gate. When provided (proxy-pool path) it overrides the
+    // process-wide gate so each egress IP is throttled independently.
+    gate?: FetchGate,
 ): FetchReturn {
     const fetchTimeout = config.networking.fetch?.timeout_ms;
     const fetchRetry = config.networking.fetch?.retry?.enabled;
+    const activeGate = gate ?? fetchGate;
     let attempt = 0;
     const callFetch = () => {
         // Every invocation after the first is a retry.
@@ -537,7 +600,7 @@ function fetchShim(
                     : null,
                 ...(init || {}),
             });
-        return fetchGate ? fetchGate.run(doFetch) : doFetch();
+        return activeGate ? activeGate.run(doFetch) : doFetch();
     };
     return fetchRetry ? retry(callFetch, retryOptions) : callFetch();
 }
@@ -565,6 +628,12 @@ class FetchGate {
         } finally {
             this.release();
         }
+    }
+
+    // True when no concurrency slot is free right now. Used by the proxy pool
+    // to decide whether to hop to another proxy instead of queuing here.
+    saturated(): boolean {
+        return this.active >= this.maxConcurrent;
     }
 
     private async acquire(): Promise<void> {
