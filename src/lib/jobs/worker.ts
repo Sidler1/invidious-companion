@@ -60,6 +60,9 @@ const OutputContentTokenSchema = z.object({
 const OutputErrorSchema = z.object({
     type: z.literal("error"),
     error: z.any(),
+    // Present when the error is scoped to a specific content-token request;
+    // absent for fatal setup/initialise errors.
+    requestId: z.string().uuid().optional(),
 }).strict();
 export const OutputMessageSchema = z.union([
     OutputReadySchema,
@@ -111,19 +114,30 @@ if (isWorker) {
         }
         // this is called every time a video needs a content token
         if (message.type === "content-token-request") {
-            if (!minter) {
-                throw new Error(
-                    "Minter not yet ready, must initialise first",
+            // Report failures back to the parent keyed by requestId instead of
+            // throwing. A thrown error here would never reach the awaiting
+            // mint promise, leaving it (and any single-flight callers) hung.
+            try {
+                if (!minter) {
+                    throw new Error(
+                        "Minter not yet ready, must initialise first",
+                    );
+                }
+                const contentToken = await minter.mintAsWebsafeString(
+                    message.videoId,
                 );
+                postMessage({
+                    type: "content-token",
+                    contentToken,
+                    requestId: message.requestId,
+                });
+            } catch (err) {
+                postMessage({
+                    type: "error",
+                    error: String(err),
+                    requestId: message.requestId,
+                });
             }
-            const contentToken = await minter.mintAsWebsafeString(
-                message.videoId,
-            );
-            postMessage({
-                type: "content-token",
-                contentToken,
-                requestId: message.requestId,
-            });
         }
     };
 

@@ -68,7 +68,7 @@ export const youtubePlayerReq = async (
     if (
         !innertubeClientOauthEnabled &&
         youtubePlayerResponse.data.streamingData &&
-        youtubePlayerResponse.data.streamingData.adaptiveFormats[0].url ===
+        youtubePlayerResponse.data.streamingData.adaptiveFormats?.[0]?.url ===
             undefined
     ) {
         logWarn(
@@ -95,9 +95,9 @@ export const youtubePlayerReq = async (
             if (
                 youtubePlayerResponseFallback.data.streamingData && (
                     youtubePlayerResponseFallback.data.streamingData
-                        .adaptiveFormats[0].url ||
+                        .adaptiveFormats?.[0]?.url ||
                     youtubePlayerResponseFallback.data.streamingData
-                        .adaptiveFormats[0].signatureCipher
+                        .adaptiveFormats?.[0]?.signatureCipher
                 )
             ) {
                 youtubePlayerResponse.data.streamingData.adaptiveFormats =

@@ -23,13 +23,17 @@
  */
 
 import type { MiddlewareHandler } from "hono";
+import { redactUrl } from "../lib/helpers/redactSensitive.ts";
 
 /**
  * Extract a short, meaningful summary from a URL.
  * Returns the pathname + a few relevant query params.
  */
 function summarizeUrl(urlStr: string): string {
-    const url = new URL(urlStr);
+    // Redact sensitive query params (pot, sig, token, ...) before extracting
+    // anything, so they can never reach the logs — including the catch-all
+    // branch below that prints arbitrary query params.
+    const url = new URL(redactUrl(urlStr));
     const path = url.pathname;
 
     // Videoplayback: only show itag and host
@@ -109,12 +113,7 @@ export const compactLogger: MiddlewareHandler = async (c, next) => {
     const status = c.res.status;
     const duration = fmtDuration(Math.round(elapsed));
 
-    // Outgoing response — color-code by status class
-    const statusTag = status >= 500
-        ? `${status}` // errors stand out
-        : status >= 400
-        ? `${status}`
-        : `${status}`;
+    c.get("metrics")?.requestLatency.observe(elapsed / 1000);
 
-    console.log(`--> ${method.padEnd(5)} ${summary} ${statusTag} ${duration}`);
+    console.log(`--> ${method.padEnd(5)} ${summary} ${status} ${duration}`);
 };

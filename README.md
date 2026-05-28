@@ -121,15 +121,12 @@ Most settings can be provided either through environment variables or `config/co
 | `CACHE_TTL_SECONDS`                                  | `3600`        |
 | `PROXY`                                              | `null`        |
 | `NETWORKING_IPV6_BLOCK`                              | `null`        |
-| `NETWORKING_IPV6_ROTATION_STRATEGY`                  | `random`      |
-| `NETWORKING_IPV6_POOL_SIZE`                          | `128`         |
 | `NETWORKING_FETCH_TIMEOUT_MS`                        | `30000`       |
 | `NETWORKING_FETCH_RETRY_ENABLED`                     | `false`       |
 | `NETWORKING_FETCH_RETRY_TIMES`                       | `1`           |
 | `NETWORKING_FETCH_RETRY_INITIAL_DEBOUNCE`            | `0`           |
 | `NETWORKING_FETCH_RETRY_DEBOUNCE_MULTIPLIER`         | `0`           |
 | `NETWORKING_VIDEOPLAYBACK_UMP`                       | `false`       |
-| `NETWORKING_VIDEOPLAYBACK_VIDEO_FETCH_CHUNK_SIZE_MB` | `5`           |
 | `JOBS_YOUTUBE_SESSION_PO_TOKEN_ENABLED`              | `true`        |
 | `JOBS_YOUTUBE_SESSION_FREQUENCY`                     | `*/5 * * * *` |
 | `YOUTUBE_SESSION_OAUTH_ENABLED`                      | `false`       |

@@ -28,6 +28,10 @@ async function getKv(): Promise<Deno.Kv> {
     return kvInstance;
 }
 
+// Tracks in-progress upstream player fetches so concurrent requests for the
+// same videoId share a single YouTube round-trip instead of stampeding.
+const inFlightPlayerRequests = new Map<string, Promise<object>>();
+
 export const youtubePlayerParsing = async ({
     innertubeClient,
     videoId,
@@ -75,8 +79,17 @@ export const youtubePlayerParsing = async ({
         }
     }
 
+    // Single-flight: collapse concurrent cache-miss fetches for the same
+    // videoId into one upstream request. Skipped for overrideCache (a forced
+    // fresh fetch, e.g. PO-token validation), which must not reuse a shared
+    // result.
+    if (!overrideCache) {
+        const existing = inFlightPlayerRequests.get(videoId);
+        if (existing) return existing;
+    }
+
     // Fresh fetch from YouTube (cache miss, disabled, or corrupted entry)
-    {
+    const fetchFresh = async (): Promise<object> => {
         if (cacheEnabled) {
             metrics?.cacheMiss.inc();
         }
@@ -207,6 +220,18 @@ export const youtubePlayerParsing = async ({
         }
 
         return videoOnlyNecessaryInfo;
+    };
+
+    if (overrideCache) {
+        return await fetchFresh();
+    }
+
+    const fetchPromise = fetchFresh();
+    inFlightPlayerRequests.set(videoId, fetchPromise);
+    try {
+        return await fetchPromise;
+    } finally {
+        inFlightPlayerRequests.delete(videoId);
     }
 };
 

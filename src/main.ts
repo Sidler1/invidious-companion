@@ -54,26 +54,26 @@ const innertubeClientJobPoTokenEnabled =
 const innertubeClientCookies = config.youtube_session.cookies;
 
 /**
- * Atomic state container to prevent race conditions between the cron job
- * and request handlers. All reads/writes go through synchronized accessors.
+ * Holds the current Innertube client and token minter, which are swapped
+ * together by the session-regeneration cron job. Reads and the swap are all
+ * synchronous; because JS runs them on a single thread, a request handler can
+ * never observe a half-updated (client, minter) pair as long as it reads both
+ * without an `await` in between — which the request middleware does.
  */
 const sharedState = {
     _client: null as Innertube | null,
-    _minter: null as unknown as TokenMinter | undefined,
-    _lock: Promise.resolve() as Promise<unknown>,
+    _minter: undefined as TokenMinter | undefined,
 
     getClient(): Innertube {
-        return this._client || innertubeClient;
+        return this._client ?? innertubeClient;
     },
     getMinter(): TokenMinter | undefined {
-        return this._minter !== null ? this._minter : tokenMinter;
+        // Once the cron job has set a client, its paired minter is the source
+        // of truth (even when undefined); before then, fall back to the
+        // module-level minter.
+        return this._client ? this._minter : tokenMinter;
     },
-    async set(
-        client: Innertube,
-        minter: TokenMinter | undefined,
-    ): Promise<void> {
-        await this._lock;
-        this._lock = Promise.resolve();
+    set(client: Innertube, minter: TokenMinter | undefined): void {
         this._client = client;
         this._minter = minter;
     },
@@ -107,7 +107,7 @@ const cache = config.cache.enabled
 innertubeClient = await Innertube.create({
     enable_session_cache: false,
     retrieve_player: innertubeClientFetchPlayer,
-    fetch: getFetchClient(config),
+    fetch: getFetchClient(config, metrics),
     cookie: innertubeClientCookies || undefined,
     user_agent: USER_AGENT,
     player_id: config.youtube_session.player_id,
@@ -125,8 +125,8 @@ if (!innertubeClientOauthEnabled) {
                 metrics,
             ),
             { minTimeout: 1_000, maxTimeout: 60_000, multiplier: 5, jitter: 0 },
-        ).then(async (result) => {
-            await sharedState.set(result.innertubeClient, result.tokenMinter);
+        ).then((result) => {
+            sharedState.set(result.innertubeClient, result.tokenMinter);
             tokenMinterReadyResolve?.();
         }).catch((err) => {
             logError(CTX.PO_TOKEN, "Failed to initialize", err);
@@ -145,7 +145,7 @@ if (!innertubeClientOauthEnabled) {
             if (innertubeClientJobPoTokenEnabled) {
                 try {
                     const result = await poTokenGenerate(config, metrics);
-                    await sharedState.set(
+                    sharedState.set(
                         result.innertubeClient,
                         result.tokenMinter,
                     );
@@ -163,7 +163,7 @@ if (!innertubeClientOauthEnabled) {
                     player_id: config.youtube_session.player_id,
                     cache, // reuse cache for speed
                 });
-                await sharedState.set(newClient, undefined);
+                sharedState.set(newClient, undefined);
             }
         },
     );
@@ -202,6 +202,12 @@ companionApp.use("*", async (c, next) => {
 companionRoutes(companionApp, config);
 
 app.use("*", async (c, next) => {
+    // The misc routes (incl. /readyz) live on this root app, so they need the
+    // same shared state the companion routes get — otherwise the readiness
+    // probe never sees the Innertube client and reports 503 forever.
+    c.set("innertubeClient", sharedState.getClient());
+    c.set("tokenMinter", sharedState.getMinter());
+    c.set("config", config);
     c.set("metrics", metrics);
     await next();
 });
@@ -266,13 +272,19 @@ export function run(signal: AbortSignal, port: number, hostname: string) {
 if (import.meta.main) {
     const controller = new AbortController();
     const { signal } = controller;
-    run(signal, config.server.port, config.server.host);
+    const server = run(signal, config.server.port, config.server.host);
 
-    const shutdown = (signalName: string) => {
+    let shuttingDown = false;
+    const shutdown = async (signalName: string) => {
+        // Guard against a second signal restarting the sequence.
+        if (shuttingDown) return;
+        shuttingDown = true;
+
         logInfo(
             CTX.SHUTDOWN,
             `Caught ${signalName}, initiating graceful shutdown...`,
         );
+        // Stop accepting new connections; in-flight requests keep running.
         controller.abort();
 
         // Cleanup PO token workers
@@ -280,8 +292,8 @@ if (import.meta.main) {
 
         metrics?.gracefulShutdowns.inc();
 
-        // Optional: add a timeout for forced exit if shutdown hangs
-        setTimeout(() => {
+        // Hard cap: if in-flight requests don't drain within 10s, force exit.
+        const forceExit = setTimeout(() => {
             logError(
                 CTX.SHUTDOWN,
                 "Graceful shutdown timeout (10s), forcing exit",
@@ -289,16 +301,21 @@ if (import.meta.main) {
             Deno.exit(0);
         }, 10000);
 
-        // Give a moment for cleanup, then exit
-        setTimeout(() => {
-            logInfo(CTX.SHUTDOWN, "Graceful shutdown completed");
-            Deno.exit(0);
-        }, 1000);
+        try {
+            // Resolves once the listener is closed and connections have drained.
+            await server.finished;
+        } catch {
+            // Ignore — we exit regardless below.
+        }
+
+        clearTimeout(forceExit);
+        logInfo(CTX.SHUTDOWN, "Graceful shutdown completed");
+        Deno.exit(0);
     };
 
     if (Deno.build.os !== "windows") {
-        Deno.addSignalListener("SIGTERM", () => shutdown("SIGTERM"));
+        Deno.addSignalListener("SIGTERM", () => void shutdown("SIGTERM"));
     }
 
-    Deno.addSignalListener("SIGINT", () => shutdown("SIGINT"));
+    Deno.addSignalListener("SIGINT", () => void shutdown("SIGINT"));
 }

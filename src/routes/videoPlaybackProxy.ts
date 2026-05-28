@@ -40,22 +40,38 @@ videoPlaybackProxy.get("/", async (c) => {
     const { host, c: client, expire } = c.req.query();
     const urlReq = new URL(c.req.url);
     const config = c.get("config");
+    c.get("metrics")?.videoPlaybackRequests.inc();
     const queryParams = new URLSearchParams(urlReq.search);
 
     if (c.req.query("enc") === "true") {
         const { data: encryptedQuery } = c.req.query();
-        const decryptedQueryParams = await decryptQuery(encryptedQuery, config);
-        const parsed = new URLSearchParams(JSON.parse(decryptedQueryParams));
+        // decryptQuery returns "" on any failure; a malformed/forged `data`
+        // param must surface as a 400, not an unhandled JSON.parse → 500.
+        let parsed: URLSearchParams;
+        try {
+            const decryptedQueryParams = await decryptQuery(
+                encryptedQuery ?? "",
+                config,
+            );
+            parsed = new URLSearchParams(JSON.parse(decryptedQueryParams));
+        } catch {
+            throw new HTTPException(400, {
+                res: new Response("Invalid encrypted data parameter"),
+            });
+        }
         queryParams.set("pot", parsed.get("pot") || "");
         queryParams.set("ip", parsed.get("ip") || "");
     }
 
-    if (!host || !/[\w-]+\.googlevideo\.com/.test(host)) {
+    // Anchored match: the host query param must be EXACTLY a googlevideo.com
+    // subdomain. An unanchored regex would accept "rr3.googlevideo.com.evil.com"
+    // or "rr3.googlevideo.com@evil.com", turning this into an SSRF/open proxy.
+    if (!host || !/^[\w-]+\.googlevideo\.com$/.test(host)) {
         throw new HTTPException(400, { res: new Response("Invalid host") });
     }
 
     if (
-        !expire || Number(expire) < Number(Date.now().toString().slice(0, -3))
+        !expire || Number(expire) < Math.floor(Date.now() / 1000)
     ) {
         throw new HTTPException(400, { res: new Response("Expired URL") });
     }

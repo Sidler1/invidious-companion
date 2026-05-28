@@ -49,6 +49,10 @@ player.post("/player", async (c) => {
             }),
         );
     }
+
+    throw new HTTPException(400, {
+        res: new Response("Missing videoId in request body."),
+    });
 });
 
 export default player;

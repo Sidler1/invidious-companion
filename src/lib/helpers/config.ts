@@ -2,10 +2,23 @@ import { z, ZodError } from "zod";
 import { parse } from "@std/toml";
 import { CTX, logError, logInfo } from "./log.ts";
 
+/**
+ * Read a numeric env var, returning undefined when it is unset, blank, or not
+ * a finite number. Lets callers use `?? default` so an explicit `0` is
+ * honoured (unlike `Number(env) || default`, where `0`/`NaN` silently fall
+ * back to the default).
+ */
+function envNumber(name: string): number | undefined {
+    const raw = Deno.env.get(name);
+    if (raw === undefined || raw.trim() === "") return undefined;
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : undefined;
+}
+
 export const ConfigSchema = z.object({
     server: z.object({
         port: z.number().int().min(1).max(65535).default(
-            Number(Deno.env.get("PORT")) || 8282,
+            envNumber("PORT") ?? 8282,
         ),
         host: z.string().default(Deno.env.get("HOST") || "127.0.0.1"),
         use_unix_socket: z.boolean().default(
@@ -74,8 +87,11 @@ export const ConfigSchema = z.object({
         directory: z.string().default(
             Deno.env.get("CACHE_DIRECTORY") || "/var/tmp",
         ),
-        ttl_seconds: z.number().int().min(0).max(86400).default(
-            Number(Deno.env.get("CACHE_TTL_SECONDS")) || 3600,
+        // Capped at 6h (21600s): deciphered googlevideo URLs carry an `expire`
+        // timestamp ~6h out, after which videoPlaybackProxy rejects them. A
+        // longer TTL would serve cached-but-expired URLs (400 "Expired URL").
+        ttl_seconds: z.number().int().min(0).max(21600).default(
+            envNumber("CACHE_TTL_SECONDS") ?? 3600,
         ),
     }).strict().default({}),
     networking: z.object({
@@ -83,15 +99,9 @@ export const ConfigSchema = z.object({
         ipv6_block: z.string().nullable().default(
             Deno.env.get("NETWORKING_IPV6_BLOCK") || null,
         ),
-        ipv6_rotation_strategy: z.string().default(
-            Deno.env.get("NETWORKING_IPV6_ROTATION_STRATEGY") || "random",
-        ),
-        ipv6_pool_size: z.number().int().min(1).max(65536).default(
-            Number(Deno.env.get("NETWORKING_IPV6_POOL_SIZE")) || 128,
-        ),
         fetch: z.object({
             timeout_ms: z.number().int().min(1000).max(300_000).default(
-                Number(Deno.env.get("NETWORKING_FETCH_TIMEOUT_MS")) || 30_000,
+                envNumber("NETWORKING_FETCH_TIMEOUT_MS") ?? 30_000,
             ),
             retry: z.object({
                 enabled: z.boolean().default(
@@ -99,19 +109,14 @@ export const ConfigSchema = z.object({
                         false,
                 ),
                 times: z.number().int().min(1).max(10).optional().default(
-                    Number(Deno.env.get("NETWORKING_FETCH_RETRY_TIMES")) || 1,
+                    envNumber("NETWORKING_FETCH_RETRY_TIMES") ?? 1,
                 ),
                 initial_debounce: z.number().optional().default(
-                    Number(
-                        Deno.env.get("NETWORKING_FETCH_RETRY_INITIAL_DEBOUNCE"),
-                    ) || 0,
+                    envNumber("NETWORKING_FETCH_RETRY_INITIAL_DEBOUNCE") ?? 0,
                 ),
                 debounce_multiplier: z.number().optional().default(
-                    Number(
-                        Deno.env.get(
-                            "NETWORKING_FETCH_RETRY_DEBOUNCE_MULTIPLIER",
-                        ),
-                    ) || 0,
+                    envNumber("NETWORKING_FETCH_RETRY_DEBOUNCE_MULTIPLIER") ??
+                        0,
                 ),
             }).strict().default({}),
         }).strict().default({}),
@@ -119,13 +124,6 @@ export const ConfigSchema = z.object({
             ump: z.boolean().default(
                 Deno.env.get("NETWORKING_VIDEOPLAYBACK_UMP") === "true" ||
                     false,
-            ),
-            video_fetch_chunk_size_mb: z.number().default(
-                Number(
-                    Deno.env.get(
-                        "NETWORKING_VIDEOPLAYBACK_VIDEO_FETCH_CHUNK_SIZE_MB",
-                    ),
-                ) || 5,
             ),
         }).strict().default({}),
         // NEW: Multiple proxies support for automatic failover when YouTube blocks one.

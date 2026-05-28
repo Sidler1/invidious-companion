@@ -46,6 +46,12 @@ export const miscRoutes = (
     app.route("/healthz", health);
     app.route("/readyz", readiness);
     if (config.server.enable_metrics) {
+        // Protect operational metrics with the same bearer token used for
+        // /youtubei/v1. Scrapers must send `Authorization: Bearer <secret_key>`.
+        app.use(
+            "/metrics",
+            bearerAuth({ token: config.server.secret_key }),
+        );
         app.route("/metrics", metrics);
     }
 };
