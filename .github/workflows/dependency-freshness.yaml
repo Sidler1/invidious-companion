@@ -1,0 +1,58 @@
+name: Dependency freshness
+
+# YouTube playback breakage is most often fixed by bumping the youtubei.js /
+# bgutils / googlevideo pins. This job periodically compares the versions
+# pinned in deno.json against upstream and fails (to surface a notification)
+# when any are behind.
+
+on:
+  schedule:
+    - cron: "0 6 * * 1" # Mondays 06:00 UTC
+  workflow_dispatch:
+
+jobs:
+  check-yt-deps:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup repo
+        uses: actions/checkout@v6
+
+      - name: Check pinned YouTube deps against upstream
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          DRIFT=0
+          summary() { echo "$1" >> "$GITHUB_STEP_SUMMARY"; echo "$1"; }
+
+          summary "# YouTube dependency freshness"
+          summary ""
+          summary "| Dependency | Pinned | Latest |"
+          summary "|---|---|---|"
+
+          # youtubei.js — LuanRT/YouTube.js, Deno-flavoured \`-deno\` tags
+          PIN_YTJS=$(grep -oE 'YouTube\.js@v[0-9]+\.[0-9]+\.[0-9]+-deno' deno.json | head -1 | sed 's/.*@//')
+          LATEST_YTJS=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
+            "https://api.github.com/repos/LuanRT/YouTube.js/tags?per_page=100" \
+            | jq -r '.[].name' | grep -- '-deno$' | sort -V | tail -1)
+          summary "| youtubei.js | ${PIN_YTJS:-?} | ${LATEST_YTJS:-?} |"
+          if [ -n "$LATEST_YTJS" ] && [ "$PIN_YTJS" != "$LATEST_YTJS" ]; then DRIFT=1; fi
+
+          # bgutils-js — npm
+          PIN_BG=$(grep -oE 'bgutils-js@[0-9]+\.[0-9]+\.[0-9]+' deno.json | head -1 | sed 's/.*@//')
+          LATEST_BG=$(curl -s "https://registry.npmjs.org/bgutils-js/latest" | jq -r '.version')
+          summary "| bgutils-js | ${PIN_BG:-?} | ${LATEST_BG:-?} |"
+          if [ -n "$LATEST_BG" ] && [ "$LATEST_BG" != "null" ] && [ "$PIN_BG" != "$LATEST_BG" ]; then DRIFT=1; fi
+
+          # @luanrt/googlevideo — JSR
+          PIN_GV=$(grep -oE 'googlevideo@[0-9]+\.[0-9]+\.[0-9]+' deno.json | head -1 | sed 's/.*@//')
+          LATEST_GV=$(curl -s "https://jsr.io/@luanrt/googlevideo/meta.json" | jq -r '.latest')
+          summary "| @luanrt/googlevideo | ${PIN_GV:-?} | ${LATEST_GV:-?} |"
+          if [ -n "$LATEST_GV" ] && [ "$LATEST_GV" != "null" ] && [ "$PIN_GV" != "$LATEST_GV" ]; then DRIFT=1; fi
+
+          summary ""
+          if [ "$DRIFT" -ne 0 ]; then
+            summary "One or more YouTube dependencies are behind upstream — consider bumping them in deno.json."
+            exit 1
+          fi
+          summary "All pinned YouTube dependencies are up to date."

@@ -101,6 +101,8 @@ if (isWorker) {
                     innertubeClientCookies:
                         message.config.youtube_session.cookies,
                     player_id: message.config.youtube_session.player_id,
+                    gl: message.config.youtube_session.gl,
+                    hl: message.config.youtube_session.hl,
                 });
                 minter = generatedMinter;
                 postMessage({
@@ -145,10 +147,12 @@ if (isWorker) {
 }
 
 async function setup(
-    { fetchImpl, innertubeClientCookies, player_id }: {
+    { fetchImpl, innertubeClientCookies, player_id, gl, hl }: {
         fetchImpl: FetchFunction;
         innertubeClientCookies: string;
         player_id?: string;
+        gl?: string;
+        hl?: string;
     },
 ) {
     const innertubeClient = await Innertube.create({
@@ -158,6 +162,8 @@ async function setup(
         retrieve_player: false,
         cookie: innertubeClientCookies || undefined,
         player_id,
+        location: gl || undefined,
+        lang: hl || undefined,
     });
 
     const visitorData = innertubeClient.session.context.client.visitorData;

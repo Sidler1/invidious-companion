@@ -126,6 +126,16 @@ export class Metrics {
         "Number of times a blacklisted proxy recovered after cooldown",
     );
 
+    public proxyBlockRetries = this.createCounter(
+        "proxy_block_retries_total",
+        "Number of in-request proxy failovers triggered by a detected YouTube block",
+    );
+
+    public blockTriggeredRegens = this.createCounter(
+        "block_triggered_regens_total",
+        "Number of session regenerations triggered proactively by a detected YouTube block",
+    );
+
     public requestLatency = this.createHistogram(
         "request_latency_seconds",
         "Request latency in seconds",

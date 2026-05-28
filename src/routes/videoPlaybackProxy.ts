@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
+import { USER_AGENT } from "bgutils";
 import { decryptQuery } from "../lib/helpers/encryptQuery.ts";
 
 import { resolveAndValidateFetchClientLocation } from "../lib/helpers/dynamicImportValidation.ts";
@@ -89,11 +90,15 @@ videoPlaybackProxy.get("/", async (c) => {
         "accept-language": "en-us,en;q=0.5",
         "origin": "https://www.youtube.com",
         "referer": "https://www.youtube.com",
+        // For WEB/TV/default streams use the same UA as the Innertube session
+        // that minted the stream's GVS pot — a UA that disagrees with the
+        // minting session is an easy 403/bot signal. ANDROID/IOS streams keep
+        // their native client UAs.
         "user-agent": client === "ANDROID"
             ? "com.google.android.youtube/1537338816 (Linux; U; Android 13; en_US; ; Build/TQ2A.230505.002; Cronet/113.0.5672.24)"
             : client === "IOS"
             ? "com.google.ios.youtube/19.32.8 (iPhone14,5; U; CPU iOS 17_6 like Mac OS X;)"
-            : "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+            : USER_AGENT,
     };
 
     // getFetchClient is a singleton — returns the same cached fetch function
