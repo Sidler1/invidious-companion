@@ -28,6 +28,12 @@
 # # will get cached in /var/tmp/youtubei.js if you specify /var/tmp
 # # you need to change the --allow-write from deno run too
 # directory = "/var/tmp" # env variable: CACHE_DIRECTORY
+# # How long deciphered player responses are cached (seconds, max 21600 = 6h).
+# ttl_seconds = 3600 # env variable: CACHE_TTL_SECONDS
+# # Short-lived caching of non-OK responses (unavailable/unplayable videos) so a
+# # client re-requesting a bad video doesn't re-hit YouTube every time. Kept
+# # small so real recoveries are picked up quickly. 0 disables. (anti-block)
+# negative_ttl_seconds = 30 # env variable: CACHE_NEGATIVE_TTL_SECONDS
  
 # [networking]
 ## Proxy type supported: https://docs.deno.com/api/deno/~/Deno.Proxy
@@ -38,23 +44,36 @@
 # #ipv6_block = "2001:db8::/32" # env variable: NETWORKING_IPV6_BLOCK
 
 ###
-# Proxy pool — FAILOVER ONLY (not load-balancing). One proxy is pinned as the
-# active egress and all traffic flows through it; `rotation` only decides which
-# proxy becomes active next after the current one is blacklisted (3 failures, a
-# detected block, or a failed health probe). This keeps a session egressing from
-# one IP. Prefer residential/mobile proxies; datacenter IPs are blocked hard.
+# Proxy pool. By default FAILOVER ONLY (not load-balancing): one proxy is pinned
+# as the active egress and all traffic flows through it; `rotation` only decides
+# which proxy becomes active next after the current one is blacklisted (3
+# failures, a detected block, or a failed health probe). This keeps a session
+# egressing from one IP. Prefer residential/mobile proxies; datacenter IPs are
+# blocked hard.
+#
+# switch_proxy_on_limit (default false) turns on rate-limit-aware spreading:
+# when the active proxy's rate-limit gate is saturated, traffic hops to the next
+# healthy proxy that still has capacity. Each proxy keeps its OWN session
+# (visitor_data + PO token minted from that proxy's IP), swapped in lockstep
+# with the active proxy, so the egress IP and its tokens stay consistent.
+# Requires [networking.rate_limit] enabled.
 ###
 # [networking.proxy_pool]
 # enabled = false
 # rotation = "round-robin" # or "random"
 # health_check = true
+# switch_proxy_on_limit = false # env variable: NETWORKING_PROXY_POOL_SWITCH_ON_LIMIT
 # proxies = ["http://user:pass@host:port", "socks5://host:port"]
 
 ###
-# Best-effort outbound rate limiting to a single egress IP. Off by default.
+# Best-effort outbound rate limiting. Caps how hard a single egress IP is hit —
+# a strong anti-block signal. ENABLED BY DEFAULT with conservative values. When
+# the proxy pool is active each proxy is throttled independently. Raise
+# min_interval_ms (e.g. 250-500) for stricter, more human-like pacing on one IP
+# at the cost of throughput.
 ###
 # [networking.rate_limit]
-# enabled = false # env variable: NETWORKING_RATE_LIMIT_ENABLED
+# enabled = true # env variable: NETWORKING_RATE_LIMIT_ENABLED
 # max_concurrent = 8 # env variable: NETWORKING_RATE_LIMIT_MAX_CONCURRENT
 # min_interval_ms = 0 # env variable: NETWORKING_RATE_LIMIT_MIN_INTERVAL_MS
 
