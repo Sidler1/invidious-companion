@@ -126,6 +126,24 @@ export const ConfigSchema = z.object({
                     false,
             ),
         }).strict().default({}),
+        // Best-effort rate limiting of outbound YouTube requests. Because the
+        // proxy pool is failover-only (one active egress IP at a time), this
+        // effectively caps how hard a single IP is hit — a strong anti-block
+        // signal. Disabled by default to preserve existing throughput.
+        rate_limit: z.object({
+            enabled: z.boolean().default(
+                Deno.env.get("NETWORKING_RATE_LIMIT_ENABLED") === "true" ||
+                    false,
+            ),
+            // Max simultaneous in-flight requests to YouTube.
+            max_concurrent: z.number().int().min(1).max(1000).default(
+                envNumber("NETWORKING_RATE_LIMIT_MAX_CONCURRENT") ?? 8,
+            ),
+            // Minimum spacing between request starts (0 = no spacing).
+            min_interval_ms: z.number().int().min(0).max(60_000).default(
+                envNumber("NETWORKING_RATE_LIMIT_MIN_INTERVAL_MS") ?? 0,
+            ),
+        }).strict().default({}),
         // NEW: Multiple proxies support for automatic failover when YouTube blocks one.
         // Use the provided get_good_proxies_for_companion.py script to generate healthy proxies.
         // Performance optimized: pre-created HttpClients, fast round-robin/random selection with cooldown on failures.
@@ -213,6 +231,16 @@ export const ConfigSchema = z.object({
                         },
                     ),
             ).default("*/5 * * * *"),
+            // How long a generated session (visitor_data + BotGuard/integrity
+            // token) is kept before a full regeneration. The `frequency` cron
+            // now only *checks* the session; it skips the expensive re-
+            // attestation (and visitor_data churn) while the session is
+            // younger than this. 0 = regenerate on every cron tick (legacy
+            // behaviour). Early token expiry or a detected block still forces
+            // an immediate regeneration regardless of this value.
+            session_lifetime_hours: z.number().min(0).max(168).default(
+                envNumber("JOBS_YOUTUBE_SESSION_LIFETIME_HOURS") ?? 6,
+            ),
         }).strict().default({}),
     }).strict().default({}),
     youtube_session: z.object({
@@ -225,6 +253,12 @@ export const ConfigSchema = z.object({
         player_id: z.string().optional().default(
             () => Deno.env.get("YOUTUBE_SESSION_PLAYER_ID") || "",
         ),
+        // Locale/geo pinning for the Innertube context. Leave empty to let
+        // youtubei.js pick defaults. When using geographically diverse
+        // proxies, pin these to match the egress country so the request
+        // locale doesn't contradict the egress IP's geolocation.
+        gl: z.string().default(Deno.env.get("YOUTUBE_SESSION_GL") || ""),
+        hl: z.string().default(Deno.env.get("YOUTUBE_SESSION_HL") || ""),
     }).strict().default({}),
 }).strict();
 

@@ -37,6 +37,27 @@
 # # Randomizes all bits after the block prefix (e.g., /32 randomizes bits 33-128)
 # #ipv6_block = "2001:db8::/32" # env variable: NETWORKING_IPV6_BLOCK
 
+###
+# Proxy pool — FAILOVER ONLY (not load-balancing). One proxy is pinned as the
+# active egress and all traffic flows through it; `rotation` only decides which
+# proxy becomes active next after the current one is blacklisted (3 failures, a
+# detected block, or a failed health probe). This keeps a session egressing from
+# one IP. Prefer residential/mobile proxies; datacenter IPs are blocked hard.
+###
+# [networking.proxy_pool]
+# enabled = false
+# rotation = "round-robin" # or "random"
+# health_check = true
+# proxies = ["http://user:pass@host:port", "socks5://host:port"]
+
+###
+# Best-effort outbound rate limiting to a single egress IP. Off by default.
+###
+# [networking.rate_limit]
+# enabled = false # env variable: NETWORKING_RATE_LIMIT_ENABLED
+# max_concurrent = 8 # env variable: NETWORKING_RATE_LIMIT_MAX_CONCURRENT
+# min_interval_ms = 0 # env variable: NETWORKING_RATE_LIMIT_MIN_INTERVAL_MS
+
 # [networking.videoplayback]
 # # Enable YouTube new video format UMP
 # ump = false # env variable: NETWORKING_VIDEOPLAYBACK_UMP
@@ -67,9 +88,17 @@
 # [jobs.youtube_session]
 # # whether to generate PO tokens
 # po_token_enabled = true # env variable: JOBS_YOUTUBE_SESSION_PO_TOKEN_ENABLED
-# # frequency of PO token refresh in cron format
+# # how often the cron CHECKS the session (cron format)
 # frequency = "*/5 * * * *" # env variable: JOBS_YOUTUBE_SESSION_FREQUENCY
- 
+# # how long a generated session (visitor_data + integrity token) is kept before
+# # a full re-attestation. 0 = regenerate on every cron tick (legacy behaviour).
+# # A detected block forces an immediate regeneration regardless.
+# session_lifetime_hours = 6 # env variable: JOBS_YOUTUBE_SESSION_LIFETIME_HOURS
+
 # [youtube_session]
 # oauth_enabled = false # env variable: YOUTUBE_SESSION_OAUTH_ENABLED
 # cookies = "" # env variable: YOUTUBE_SESSION_COOKIES
+# # Locale/geo pinning. Leave empty for youtubei.js defaults. With geo-diverse
+# # proxies, match these to the egress country (e.g. gl = "US", hl = "en").
+# gl = "" # env variable: YOUTUBE_SESSION_GL
+# hl = "" # env variable: YOUTUBE_SESSION_HL

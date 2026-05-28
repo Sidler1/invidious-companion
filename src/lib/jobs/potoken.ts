@@ -18,7 +18,9 @@ if (Deno.env.get("GET_FETCH_CLIENT_LOCATION")) {
         ) as string;
     }
 }
-const { getFetchClient } = await import(getFetchClientLocation);
+const { getFetchClient, getSessionEgressProxy } = await import(
+    getFetchClientLocation
+);
 
 import { InputMessage, OutputMessageSchema } from "./worker.ts";
 
@@ -107,7 +109,41 @@ export const poTokenGenerate = (
             const untypedPostMessage = worker.postMessage.bind(worker);
             worker.postMessage = (message: InputMessage) =>
                 untypedPostMessage(message);
-            worker.postMessage({ type: "initialise", config });
+
+            // Pin the worker's BotGuard attestation to the same egress proxy
+            // the request path will use, so the visitor_data / PO token are
+            // minted from the IP that later presents them. Only the failover
+            // proxy pool needs this; single-proxy/direct are already
+            // consistent and IPv6 rotation is per-request by design.
+            let workerConfig = config;
+            if (
+                config.networking.proxy_pool.enabled &&
+                config.networking.proxy_pool.proxies.length > 0
+            ) {
+                try {
+                    const sessionProxy = await getSessionEgressProxy(config);
+                    if (sessionProxy) {
+                        workerConfig = {
+                            ...config,
+                            networking: {
+                                ...config.networking,
+                                proxy: sessionProxy,
+                                proxy_pool: {
+                                    ...config.networking.proxy_pool,
+                                    enabled: false,
+                                },
+                            },
+                        };
+                    }
+                } catch (err) {
+                    logWarn(
+                        CTX.PO_TOKEN,
+                        `Could not pin session egress proxy: ${err}`,
+                    );
+                }
+            }
+
+            worker.postMessage({ type: "initialise", config: workerConfig });
         }
 
         // Only fatal setup/initialise errors (no requestId) tear down the

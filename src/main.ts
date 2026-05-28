@@ -15,7 +15,7 @@ import { existsSync } from "@std/fs/exists";
 import { parseConfig } from "./lib/helpers/config.ts";
 import { Metrics } from "./lib/helpers/metrics.ts";
 import { jsInterpreter } from "./lib/helpers/jsInterpreter.ts";
-import { CTX, logError, logInfo } from "./lib/helpers/log.ts";
+import { CTX, logError, logInfo, logWarn } from "./lib/helpers/log.ts";
 
 const config = await parseConfig();
 
@@ -31,7 +31,9 @@ if (args._version_date && args._version_commit) {
 import { resolveAndValidateFetchClientLocation } from "./lib/helpers/dynamicImportValidation.ts";
 
 const getFetchClientLocation = resolveAndValidateFetchClientLocation();
-const { getFetchClient } = await import(getFetchClientLocation);
+const { getFetchClient, setOnYouTubeBlock } = await import(
+    getFetchClientLocation
+);
 
 declare module "hono" {
     interface ContextVariableMap extends HonoVariables {}
@@ -104,6 +106,47 @@ const cache = config.cache.enabled
     ? new UniversalCache(true, config.cache.directory)
     : undefined;
 
+// Session lifecycle state. `sessionGeneratedAtMs` records the last successful
+// full session generation; the scheduled cron uses it to skip the expensive
+// BotGuard re-attestation (and visitor_data churn) while the session is still
+// within its configured lifetime. The guards keep scheduled, lifetime, and
+// block-triggered regenerations from overlapping or storming.
+let sessionGeneratedAtMs = 0;
+let sessionRegenInFlight = false;
+let lastBlockRegenMs = 0;
+const BLOCK_REGEN_COOLDOWN_MS = 60_000;
+
+async function regenerateSession(reason: string): Promise<void> {
+    if (sessionRegenInFlight) return;
+    sessionRegenInFlight = true;
+    try {
+        if (innertubeClientJobPoTokenEnabled) {
+            const result = await poTokenGenerate(config, metrics);
+            sharedState.set(result.innertubeClient, result.tokenMinter);
+        } else {
+            const newClient = await Innertube.create({
+                enable_session_cache: false,
+                fetch: getFetchClient(config),
+                retrieve_player: innertubeClientFetchPlayer,
+                user_agent: USER_AGENT,
+                cookie: innertubeClientCookies || undefined,
+                player_id: config.youtube_session.player_id,
+                location: config.youtube_session.gl || undefined,
+                lang: config.youtube_session.hl || undefined,
+                cache, // reuse cache for speed
+            });
+            sharedState.set(newClient, undefined);
+        }
+        sessionGeneratedAtMs = Date.now();
+        logInfo(CTX.PO_TOKEN, `Session regenerated (${reason})`);
+    } catch (err) {
+        metrics?.potokenGenerationFailure.inc();
+        throw err;
+    } finally {
+        sessionRegenInFlight = false;
+    }
+}
+
 innertubeClient = await Innertube.create({
     enable_session_cache: false,
     retrieve_player: innertubeClientFetchPlayer,
@@ -111,6 +154,8 @@ innertubeClient = await Innertube.create({
     cookie: innertubeClientCookies || undefined,
     user_agent: USER_AGENT,
     player_id: config.youtube_session.player_id,
+    location: config.youtube_session.gl || undefined,
+    lang: config.youtube_session.hl || undefined,
     cache,
 });
 
@@ -127,6 +172,7 @@ if (!innertubeClientOauthEnabled) {
             { minTimeout: 1_000, maxTimeout: 60_000, multiplier: 5, jitter: 0 },
         ).then((result) => {
             sharedState.set(result.innertubeClient, result.tokenMinter);
+            sessionGeneratedAtMs = Date.now();
             tokenMinterReadyResolve?.();
         }).catch((err) => {
             logError(CTX.PO_TOKEN, "Failed to initialize", err);
@@ -134,37 +180,56 @@ if (!innertubeClientOauthEnabled) {
             tokenMinterReadyResolve?.();
         });
     } else {
-        // If PO token is not enabled, resolve immediately
+        // No PO token: the client created above is the session. Mark it so the
+        // lifetime check below doesn't immediately regenerate it.
+        sessionGeneratedAtMs = Date.now();
         tokenMinterReadyResolve?.();
     }
+
+    // Proactively regenerate the session when a block is detected, instead of
+    // waiting for the next scheduled tick. Debounced so a burst of blocked
+    // requests can't trigger a regeneration storm.
+    setOnYouTubeBlock(() => {
+        const now = Date.now();
+        if (now - lastBlockRegenMs < BLOCK_REGEN_COOLDOWN_MS) return;
+        lastBlockRegenMs = now;
+        metrics?.blockTriggeredRegens.inc();
+        logWarn(
+            CTX.PO_TOKEN,
+            "YouTube block detected — regenerating session proactively",
+        );
+        regenerateSession("block-detected").catch((err) =>
+            logError(
+                CTX.PO_TOKEN,
+                "Block-triggered session regeneration failed",
+                err,
+            )
+        );
+    });
+
     Deno.cron(
         "regenerate youtube session",
         config.jobs.youtube_session.frequency,
         { backoffSchedule: [5_000, 15_000, 60_000, 180_000] },
         async () => {
-            if (innertubeClientJobPoTokenEnabled) {
-                try {
-                    const result = await poTokenGenerate(config, metrics);
-                    sharedState.set(
-                        result.innertubeClient,
-                        result.tokenMinter,
-                    );
-                } catch (err) {
-                    metrics?.potokenGenerationFailure.inc();
-                    throw err;
-                }
-            } else {
-                const newClient = await Innertube.create({
-                    enable_session_cache: false,
-                    fetch: getFetchClient(config),
-                    retrieve_player: innertubeClientFetchPlayer,
-                    user_agent: USER_AGENT,
-                    cookie: innertubeClientCookies || undefined,
-                    player_id: config.youtube_session.player_id,
-                    cache, // reuse cache for speed
-                });
-                sharedState.set(newClient, undefined);
+            // Skip the expensive full regeneration while the current session is
+            // still within its configured lifetime. The alive worker keeps
+            // minting per-video content tokens in the meantime; early token
+            // expiry or a detected block forces a regen out of band.
+            const lifetimeMs =
+                config.jobs.youtube_session.session_lifetime_hours *
+                60 * 60 * 1000;
+            const age = Date.now() - sessionGeneratedAtMs;
+            if (sessionGeneratedAtMs > 0 && age < lifetimeMs) {
+                logInfo(
+                    CTX.PO_TOKEN,
+                    `Session still fresh (${
+                        Math.round(age / 1000)
+                    }s old), skipping scheduled regeneration`,
+                );
+                return;
             }
+            await regenerateSession("scheduled");
         },
     );
 } else if (innertubeClientOauthEnabled) {

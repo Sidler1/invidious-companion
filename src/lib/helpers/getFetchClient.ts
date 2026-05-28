@@ -43,6 +43,41 @@ let cachedConfigRef: Config | null = null;
 // Note: the PO-token worker runs in a separate isolate and has no metrics.
 let metricsRef: Metrics | undefined;
 
+// Invoked (in the main isolate only) when a YouTube anti-bot block is detected
+// and could not be worked around within the request. main.ts registers a
+// debounced handler that proactively regenerates the session.
+let onYouTubeBlock: (() => void) | undefined;
+export function setOnYouTubeBlock(cb: () => void): void {
+    onYouTubeBlock = cb;
+}
+
+// When the proxy pool is active, this points at its proxy selector so the
+// session bootstrap (PO-token worker) can be pinned to the same egress IP the
+// request path is using. Null when no pool is configured.
+let poolActiveProxySelector:
+    | ((excluded?: Set<string>) => Promise<string | null>)
+    | null = null;
+
+/**
+ * Resolve the egress proxy the current session should use, so the PO-token
+ * worker can attest from the same IP the player/stream requests go through.
+ * Returns the pool's active proxy when a pool is configured, otherwise the
+ * single configured proxy (or null for direct/IPv6).
+ */
+export async function getSessionEgressProxy(
+    config: Config,
+): Promise<string | null> {
+    // Ensure the pool (and its selector) has been initialised.
+    getFetchClient(config);
+    if (poolActiveProxySelector) {
+        return await poolActiveProxySelector();
+    }
+    return config.networking.proxy ?? null;
+}
+
+// Process-wide outbound rate limiter (built from config.networking.rate_limit).
+let fetchGate: FetchGate | undefined;
+
 export const getFetchClient = (config: Config, metrics?: Metrics): FetchFn => {
     if (metrics) metricsRef = metrics;
 
@@ -66,6 +101,19 @@ export const getFetchClient = (config: Config, metrics?: Metrics): FetchFn => {
         jitter: 0,
     };
 
+    // (Re)build the outbound rate limiter for this config.
+    const rl = config.networking.rate_limit;
+    fetchGate = rl?.enabled
+        ? new FetchGate(rl.max_concurrent, rl.min_interval_ms)
+        : undefined;
+
+    // The proxy pool is FAILOVER-ONLY, not load-balancing. It pins a single
+    // active proxy and routes everything through it; `rotation` (round-robin |
+    // random) only decides which proxy becomes active *next* after the current
+    // one is blacklisted (3 failures / a detected block / a failed health
+    // probe). This is deliberate: one logical session should egress from one
+    // IP so PO tokens, visitor_data, and stream requests stay IP-consistent.
+    // It does NOT spread load across proxies within a session.
     const proxyPool = config.networking.proxy_pool;
     if (proxyPool?.enabled && proxyPool.proxies.length > 0) {
         const proxyClients = new Map<string, Deno.HttpClient>();
@@ -199,18 +247,23 @@ export const getFetchClient = (config: Config, metrics?: Metrics): FetchFn => {
             activeProxyUrl = proxyUrl;
         };
 
-        const ensureActiveProxy = async (): Promise<string | null> => {
+        const ensureActiveProxy = async (
+            excluded: Set<string> = new Set(),
+        ): Promise<string | null> => {
             await revalidateCooldownProxies();
 
-            if (activeProxyUrl && healthyProxies.has(activeProxyUrl)) {
+            if (
+                activeProxyUrl && healthyProxies.has(activeProxyUrl) &&
+                !excluded.has(activeProxyUrl)
+            ) {
                 return activeProxyUrl;
             }
 
-            const excluded = new Set<string>();
-            while (excluded.size < allProxyUrls.length) {
-                const candidate = getNextHealthyProxy(excluded);
+            const tried = new Set<string>(excluded);
+            while (tried.size < allProxyUrls.length) {
+                const candidate = getNextHealthyProxy(tried);
                 if (!candidate) break;
-                excluded.add(candidate);
+                tried.add(candidate);
 
                 const healthy = await probeProxyHealth(candidate);
                 if (healthy) {
@@ -232,48 +285,85 @@ export const getFetchClient = (config: Config, metrics?: Metrics): FetchFn => {
             return null;
         };
 
+        // Expose the selector so the session bootstrap can pin to this pool's
+        // active egress proxy (see getSessionEgressProxy).
+        poolActiveProxySelector = ensureActiveProxy;
+
         const fn: FetchFn = async (
             input: FetchInputParameter,
             init?: FetchInitParameterWithClient,
         ) => {
-            const proxyUrl = await ensureActiveProxy();
-            if (!proxyUrl) {
-                throw new Error(
-                    "All proxies in the pool are blacklisted or unhealthy. No healthy proxy available.",
-                );
-            }
-            metricsRef?.proxySelections.inc();
+            // On a detected block, fail the current proxy over to a different
+            // healthy one within the same request instead of returning the
+            // blocked response. Capped so we don't burn the whole pool on one
+            // request. (Player bodies are JSON strings, safe to re-send.)
+            const excluded = new Set<string>();
+            const maxAttempts = Math.min(Math.max(allProxyUrls.length, 1), 3);
+            let lastRes: Response | undefined;
+            let lastErr: unknown;
+            let sawBlock = false;
 
-            const client = proxyClients.get(proxyUrl)!;
+            for (let attempt = 0; attempt < maxAttempts; attempt++) {
+                const proxyUrl = await ensureActiveProxy(excluded);
+                if (!proxyUrl) break;
+                metricsRef?.proxySelections.inc();
 
-            try {
-                const fetchRes = await fetchShim(config, retryOptions, input, {
-                    client,
-                    headers: init?.headers,
-                    method: init?.method,
-                    body: init?.body,
-                });
+                const client = proxyClients.get(proxyUrl)!;
 
-                const isBlocked = await checkYouTubeBlock(fetchRes);
-
-                if (isBlocked) {
-                    markProxyFailure(proxyUrl);
-                    logWarn(
-                        CTX.PROXY,
-                        `Detected YouTube anti-bot response on ${
-                            maskProxyUrl(proxyUrl)
-                        }. Active proxy marked unhealthy.`,
+                try {
+                    const fetchRes = await fetchShim(
+                        config,
+                        retryOptions,
+                        input,
+                        {
+                            client,
+                            headers: init?.headers,
+                            method: init?.method,
+                            body: init?.body,
+                        },
                     );
-                } else {
-                    markProxySuccess(proxyUrl);
-                }
 
-                return fetchRes;
-            } catch (e) {
-                metricsRef?.upstreamFailures.inc();
-                markProxyFailure(proxyUrl);
-                throw e;
+                    const isBlocked = await checkYouTubeBlock(fetchRes);
+
+                    if (isBlocked) {
+                        sawBlock = true;
+                        markProxyFailure(proxyUrl);
+                        excluded.add(proxyUrl);
+                        logWarn(
+                            CTX.PROXY,
+                            `Detected YouTube anti-bot response on ${
+                                maskProxyUrl(proxyUrl)
+                            }; failing over to another proxy.`,
+                        );
+                        // Discard the superseded blocked body to avoid a leak.
+                        if (lastRes) {
+                            await lastRes.body?.cancel().catch(() => {});
+                        }
+                        lastRes = fetchRes;
+                        if (attempt < maxAttempts - 1) {
+                            metricsRef?.proxyBlockRetries.inc();
+                        }
+                        continue;
+                    }
+
+                    markProxySuccess(proxyUrl);
+                    return fetchRes;
+                } catch (e) {
+                    metricsRef?.upstreamFailures.inc();
+                    markProxyFailure(proxyUrl);
+                    excluded.add(proxyUrl);
+                    lastErr = e;
+                }
             }
+
+            // Exhausted attempts. A block we couldn't route around should kick
+            // off a proactive session regeneration.
+            if (sawBlock) onYouTubeBlock?.();
+            if (lastRes) return lastRes;
+            if (lastErr) throw lastErr;
+            throw new Error(
+                "All proxies in the pool are blacklisted or unhealthy. No healthy proxy available.",
+            );
         };
 
         cachedFetchFn = fn;
@@ -325,6 +415,9 @@ export const getFetchClient = (config: Config, metrics?: Metrics): FetchFn => {
                     CTX.PROXY,
                     `YouTube block detected on direct/single-proxy path — consider enabling proxy_pool`,
                 );
+                // No alternate egress to retry here, but a proactive session
+                // regeneration may still recover (new visitor_data/PO token).
+                onYouTubeBlock?.();
             }
 
             return fetchRes;
@@ -437,14 +530,64 @@ function fetchShim(
     const callFetch = () => {
         // Every invocation after the first is a retry.
         if (attempt++ > 0) metricsRef?.upstreamRetries.inc();
-        return fetch(input, {
-            signal: fetchTimeout
-                ? AbortSignal.timeout(Number(fetchTimeout))
-                : null,
-            ...(init || {}),
-        });
+        const doFetch = () =>
+            fetch(input, {
+                signal: fetchTimeout
+                    ? AbortSignal.timeout(Number(fetchTimeout))
+                    : null,
+                ...(init || {}),
+            });
+        return fetchGate ? fetchGate.run(doFetch) : doFetch();
     };
     return fetchRetry ? retry(callFetch, retryOptions) : callFetch();
+}
+
+/**
+ * Best-effort outbound rate limiter. Caps the number of concurrent in-flight
+ * requests and optionally enforces a minimum spacing between request starts.
+ * Shared process-wide; combined with the failover-only proxy pool this
+ * throttles how hard the single active egress IP is hit.
+ */
+class FetchGate {
+    private active = 0;
+    private readonly waiters: Array<() => void> = [];
+    private nextStart = 0;
+
+    constructor(
+        private readonly maxConcurrent: number,
+        private readonly minIntervalMs: number,
+    ) {}
+
+    async run<T>(fn: () => Promise<T>): Promise<T> {
+        await this.acquire();
+        try {
+            return await fn();
+        } finally {
+            this.release();
+        }
+    }
+
+    private async acquire(): Promise<void> {
+        if (this.active >= this.maxConcurrent) {
+            await new Promise<void>((resolve) => this.waiters.push(resolve));
+        }
+        this.active++;
+        if (this.minIntervalMs > 0) {
+            const now = Date.now();
+            const startAt = Math.max(now, this.nextStart);
+            this.nextStart = startAt + this.minIntervalMs;
+            const wait = startAt - now;
+            if (wait > 0) {
+                await new Promise((resolve) => setTimeout(resolve, wait));
+            }
+        }
+    }
+
+    private release(): void {
+        this.active--;
+        const next = this.waiters.shift();
+        if (next) next();
+    }
 }
 
 /**

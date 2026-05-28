@@ -147,7 +147,7 @@ Deno.test({
 
 Deno.test({
     name:
-        "getFetchClient with proxy_pool - switches proxy only after active proxy becomes unhealthy",
+        "getFetchClient with proxy_pool - fails over to another proxy within the same request when a block is detected",
     fn: async () => {
         const originalFetch = globalThis.fetch;
         const originalCreateHttpClient = Deno.createHttpClient;
@@ -247,7 +247,10 @@ Deno.test({
 
             assertEquals(result.status, 200);
             assertEquals(body.includes('"status":"OK"'), true);
-            assertEquals(requestClientIds, [1, 1, 1, 2]);
+            // proxy1 returns a bot-block on its first request, so the request
+            // fails over to proxy2 in-flight (rather than returning the block).
+            // proxy2 then becomes the sticky active proxy for the rest.
+            assertEquals(requestClientIds, [1, 2, 2, 2, 2]);
             assertEquals(usedClientIds.includes(2), true);
         } finally {
             globalThis.fetch = originalFetch;

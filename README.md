@@ -126,18 +126,48 @@ Most settings can be provided either through environment variables or `config/co
 | `NETWORKING_FETCH_RETRY_TIMES`                       | `1`           |
 | `NETWORKING_FETCH_RETRY_INITIAL_DEBOUNCE`            | `0`           |
 | `NETWORKING_FETCH_RETRY_DEBOUNCE_MULTIPLIER`         | `0`           |
+| `NETWORKING_RATE_LIMIT_ENABLED`                      | `false`       |
+| `NETWORKING_RATE_LIMIT_MAX_CONCURRENT`               | `8`           |
+| `NETWORKING_RATE_LIMIT_MIN_INTERVAL_MS`              | `0`           |
 | `NETWORKING_VIDEOPLAYBACK_UMP`                       | `false`       |
 | `JOBS_YOUTUBE_SESSION_PO_TOKEN_ENABLED`              | `true`        |
 | `JOBS_YOUTUBE_SESSION_FREQUENCY`                     | `*/5 * * * *` |
+| `JOBS_YOUTUBE_SESSION_LIFETIME_HOURS`                | `6`           |
 | `YOUTUBE_SESSION_OAUTH_ENABLED`                      | `false`       |
 | `YOUTUBE_SESSION_COOKIES`                            | `""`          |
 | `YOUTUBE_SESSION_PLAYER_ID`                          | `""`          |
+| `YOUTUBE_SESSION_GL`                                 | `""`          |
+| `YOUTUBE_SESSION_HL`                                 | `""`          |
 
 Additional runtime variable used by startup/import logic:
 
 | Variable                    | Description                                                                                    |
 |-----------------------------|------------------------------------------------------------------------------------------------|
 | `GET_FETCH_CLIENT_LOCATION` | Overrides module location for `getFetchClient` import in `src/main.ts` (advanced/debug usage). |
+
+### Anti-blocking notes
+
+- **Proxy pool is failover-only, not load-balancing.** When `[networking.proxy_pool]`
+  is enabled, one proxy is pinned as the active egress and *all* traffic goes
+  through it; `rotation` (`round-robin` | `random`) only decides which proxy
+  becomes active next after the current one is blacklisted (3 failures, a
+  detected block, or a failed health probe). This keeps a logical session
+  egressing from a single IP so PO tokens, `visitor_data`, and stream requests
+  stay IP-consistent. To spread load, run multiple instances.
+- **Session/IP consistency.** In proxy-pool mode the PO-token worker is pinned
+  to the same active proxy the request path uses, so BotGuard attestation and
+  playback share one IP. Use **residential/mobile** proxies where possible —
+  datacenter IPs are blocked aggressively.
+- **`NETWORKING_RATE_LIMIT_*`** caps concurrent requests / spaces out request
+  starts to a single egress IP. Off by default; enable it if you see blocks
+  under load.
+- **`JOBS_YOUTUBE_SESSION_LIFETIME_HOURS`** keeps a generated `visitor_data`
+  alive for the given window instead of churning it on every `frequency` tick;
+  the cron then only re-attests once the session ages out. A detected block
+  triggers an immediate regeneration regardless.
+- **`YOUTUBE_SESSION_GL` / `YOUTUBE_SESSION_HL`** pin the request locale/region.
+  Match them to your proxy's country so the locale doesn't contradict the
+  egress IP's geolocation.
 
 ## Tests
 
