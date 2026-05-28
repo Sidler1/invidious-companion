@@ -31,7 +31,12 @@ if (args._version_date && args._version_commit) {
 import { resolveAndValidateFetchClientLocation } from "./lib/helpers/dynamicImportValidation.ts";
 
 const getFetchClientLocation = resolveAndValidateFetchClientLocation();
-const { getFetchClient, setOnYouTubeBlock } = await import(
+const {
+    getFetchClient,
+    setOnYouTubeBlock,
+    setOnActiveProxyChange,
+    getSessionEgressProxy,
+} = await import(
     getFetchClientLocation
 );
 
@@ -116,15 +121,31 @@ let sessionRegenInFlight = false;
 let lastBlockRegenMs = 0;
 const BLOCK_REGEN_COOLDOWN_MS = 60_000;
 
+// Per-proxy session cache, used only when proxy_pool.switch_proxy_on_limit is
+// on. Each egress proxy keeps its own session (Innertube client + minter, whose
+// visitor_data/PO token were minted from that proxy's IP), so a rate-limit hop
+// to a different proxy swaps in a matching, already-warm session instead of
+// presenting one IP's tokens from another IP.
+const perProxySessions = new Map<string, {
+    client: Innertube;
+    minter: TokenMinter | undefined;
+    builtAt: number;
+}>();
+const perProxySessionsEnabled = config.networking.proxy_pool.enabled &&
+    config.networking.proxy_pool.switch_proxy_on_limit;
+
 async function regenerateSession(reason: string): Promise<void> {
     if (sessionRegenInFlight) return;
     sessionRegenInFlight = true;
     try {
+        let newClient: Innertube;
+        let newMinter: TokenMinter | undefined;
         if (innertubeClientJobPoTokenEnabled) {
             const result = await poTokenGenerate(config, metrics);
-            sharedState.set(result.innertubeClient, result.tokenMinter);
+            newClient = result.innertubeClient;
+            newMinter = result.tokenMinter;
         } else {
-            const newClient = await Innertube.create({
+            newClient = await Innertube.create({
                 enable_session_cache: false,
                 fetch: getFetchClient(config),
                 retrieve_player: innertubeClientFetchPlayer,
@@ -135,9 +156,23 @@ async function regenerateSession(reason: string): Promise<void> {
                 lang: config.youtube_session.hl || undefined,
                 cache, // reuse cache for speed
             });
-            sharedState.set(newClient, undefined);
+            newMinter = undefined;
         }
+        sharedState.set(newClient, newMinter);
         sessionGeneratedAtMs = Date.now();
+
+        // Cache this session under the egress proxy it was minted through, so a
+        // later hop back to that proxy reuses it (see onActiveProxyChange).
+        if (perProxySessionsEnabled) {
+            const egress = await getSessionEgressProxy(config).catch(() => null);
+            if (egress) {
+                perProxySessions.set(egress, {
+                    client: newClient,
+                    minter: newMinter,
+                    builtAt: Date.now(),
+                });
+            }
+        }
         logInfo(CTX.PO_TOKEN, `Session regenerated (${reason})`);
     } catch (err) {
         metrics?.potokenGenerationFailure.inc();
@@ -206,6 +241,34 @@ if (!innertubeClientOauthEnabled) {
             )
         );
     });
+
+    // When the proxy pool hops the active egress (rate-limit-driven, only with
+    // switch_proxy_on_limit), swap in that proxy's session so its IP and tokens
+    // stay consistent. Reuse a still-fresh cached session synchronously;
+    // otherwise mint a new one in the background pinned to the new proxy.
+    if (perProxySessionsEnabled) {
+        setOnActiveProxyChange((proxyUrl: string) => {
+            const lifetimeMs =
+                config.jobs.youtube_session.session_lifetime_hours *
+                60 * 60 * 1000;
+            const cached = perProxySessions.get(proxyUrl);
+            if (cached && Date.now() - cached.builtAt < lifetimeMs) {
+                sharedState.set(cached.client, cached.minter);
+                return;
+            }
+            logInfo(
+                CTX.PROXY,
+                "Active egress proxy changed — minting session for new IP",
+            );
+            regenerateSession("proxy-switch").catch((err) =>
+                logError(
+                    CTX.PROXY,
+                    "Proxy-switch session regeneration failed",
+                    err,
+                )
+            );
+        });
+    }
 
     Deno.cron(
         "regenerate youtube session",

@@ -127,6 +127,27 @@ export const youtubePlayerParsing = async ({
                 !clientNameUsed?.value.includes("IOS") &&
                 !clientNameUsed?.value.includes("ANDROID")
             ) {
+                // The session PO token (minted from visitor_data) is the GVS
+                // `pot` that web-family clients (WEB/MWEB/TV) must carry on the
+                // `videoplayback` URL. youtubei.js's `Format.decipher()` only
+                // descrambles the signature/nsig — it does NOT append `pot`
+                // (that lives in the higher-level helpers we bypass here), so
+                // without this the stream URLs go out unauthenticated and the
+                // CDN throttles/403s them, forcing IP rotation. Undefined when
+                // the PO-token job is disabled — then we skip it (web clients
+                // generally won't have usable URLs in that mode anyway).
+                const sessionPoToken = innertubeClient.session.po_token;
+
+                const finalizeUrl = (url: string): string => {
+                    let out = url.includes("alr=yes")
+                        ? url.replace("alr=yes", "alr=no")
+                        : `${url}&alr=no`;
+                    if (sessionPoToken && !out.includes("pot=")) {
+                        out += `&pot=${encodeURIComponent(sessionPoToken)}`;
+                    }
+                    return out;
+                };
+
                 for (
                     let index = 0;
                     index < streamingData.formats.length;
@@ -141,11 +162,7 @@ export const youtubePlayerParsing = async ({
                     if (format.signatureCipher !== undefined) {
                         delete format.signatureCipher;
                     }
-                    if (format.url.includes("alr=yes")) {
-                        format.url = format.url.replace("alr=yes", "alr=no");
-                    } else {
-                        format.url += "&alr=no";
-                    }
+                    format.url = finalizeUrl(format.url);
                 }
                 for (
                     let index = 0;
@@ -162,11 +179,7 @@ export const youtubePlayerParsing = async ({
                     if (format.signatureCipher !== undefined) {
                         delete format.signatureCipher;
                     }
-                    if (format.url.includes("alr=yes")) {
-                        format.url = format.url.replace("alr=yes", "alr=no");
-                    } else {
-                        format.url += "&alr=no";
-                    }
+                    format.url = finalizeUrl(format.url);
                 }
             }
         }
@@ -217,6 +230,32 @@ export const youtubePlayerParsing = async ({
             }
         } else {
             metrics?.checkInnertubeResponse(videoData);
+            // Negative cache: briefly remember non-OK responses (unplayable,
+            // login-required, etc.) so a client re-requesting an unavailable
+            // video doesn't re-hit YouTube on every call. Kept short so a
+            // genuine recovery (e.g. after a session regen) is picked up soon.
+            const negativeTtl = config.cache.negative_ttl_seconds;
+            if (cacheEnabled && negativeTtl > 0) {
+                (async () => {
+                    try {
+                        await kv.set(
+                            ["video_cache", videoId],
+                            compress(
+                                new TextEncoder().encode(
+                                    JSON.stringify(videoOnlyNecessaryInfo),
+                                ),
+                            ),
+                            { expireIn: negativeTtl * 1000 },
+                        );
+                    } catch (err) {
+                        logError(
+                            CTX.CACHE,
+                            `Failed to write negative cache for ${videoId}`,
+                            err,
+                        );
+                    }
+                })();
+            }
         }
 
         return videoOnlyNecessaryInfo;

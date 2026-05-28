@@ -93,6 +93,14 @@ export const ConfigSchema = z.object({
         ttl_seconds: z.number().int().min(0).max(21600).default(
             envNumber("CACHE_TTL_SECONDS") ?? 3600,
         ),
+        // Short-lived caching of non-OK player responses (ERROR / unplayable).
+        // Without it, a client hammering an unavailable video re-hits YouTube
+        // on every request — a needless per-IP load/anti-bot signal. Kept
+        // small so genuine recoveries (e.g. after a session regen) aren't
+        // masked for long. 0 disables negative caching.
+        negative_ttl_seconds: z.number().int().min(0).max(3600).default(
+            envNumber("CACHE_NEGATIVE_TTL_SECONDS") ?? 30,
+        ),
     }).strict().default({}),
     networking: z.object({
         proxy: z.string().nullable().default(Deno.env.get("PROXY") || null),
@@ -126,20 +134,24 @@ export const ConfigSchema = z.object({
                     false,
             ),
         }).strict().default({}),
-        // Best-effort rate limiting of outbound YouTube requests. Because the
-        // proxy pool is failover-only (one active egress IP at a time), this
-        // effectively caps how hard a single IP is hit — a strong anti-block
-        // signal. Disabled by default to preserve existing throughput.
+        // Best-effort rate limiting of outbound YouTube requests. Caps how
+        // hard a single egress IP is hit — a strong anti-block signal. Enabled
+        // by default with conservative values: the concurrency cap is high
+        // enough not to bottleneck a normal instance, but bounds bursts that
+        // look like bot traffic. When the proxy pool is active each proxy is
+        // throttled independently (see proxy_pool.switch_proxy_on_limit).
         rate_limit: z.object({
             enabled: z.boolean().default(
-                Deno.env.get("NETWORKING_RATE_LIMIT_ENABLED") === "true" ||
-                    false,
+                Deno.env.get("NETWORKING_RATE_LIMIT_ENABLED") !== "false",
             ),
-            // Max simultaneous in-flight requests to YouTube.
+            // Max simultaneous in-flight requests to YouTube (per egress IP
+            // when the proxy pool is active).
             max_concurrent: z.number().int().min(1).max(1000).default(
                 envNumber("NETWORKING_RATE_LIMIT_MAX_CONCURRENT") ?? 8,
             ),
-            // Minimum spacing between request starts (0 = no spacing).
+            // Minimum spacing between request starts (0 = no spacing). Raise
+            // (e.g. 250-500ms) for stricter, more human-like pacing on a
+            // single IP at the cost of throughput.
             min_interval_ms: z.number().int().min(0).max(60_000).default(
                 envNumber("NETWORKING_RATE_LIMIT_MIN_INTERVAL_MS") ?? 0,
             ),
@@ -151,6 +163,18 @@ export const ConfigSchema = z.object({
             enabled: z.boolean().default(false),
             rotation: z.enum(["round-robin", "random"]).default("round-robin"),
             health_check: z.boolean().default(true),
+            // When the active proxy's rate-limit gate is saturated, hop the
+            // active egress to the next healthy proxy that still has capacity
+            // instead of queuing. This spreads sustained load across the pool
+            // while preserving per-IP session consistency: each proxy carries
+            // its OWN cached session (visitor_data + PO token minted from that
+            // proxy's egress), and the active session is swapped in lockstep
+            // with the active proxy. Default off — leaves the pool as pure
+            // failover. Requires rate_limit.enabled.
+            switch_proxy_on_limit: z.boolean().default(
+                Deno.env.get("NETWORKING_PROXY_POOL_SWITCH_ON_LIMIT") ===
+                        "true" || false,
+            ),
             proxies: z.array(
                 z.string().refine(
                     (url) => {
