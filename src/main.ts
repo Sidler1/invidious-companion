@@ -36,6 +36,7 @@ const {
     setOnYouTubeBlock,
     setOnActiveProxyChange,
     getSessionEgressProxy,
+    rotateSessionEgressProxy,
 } = await import(
     getFetchClientLocation
 );
@@ -121,6 +122,12 @@ let sessionRegenInFlight = false;
 let lastBlockRegenMs = 0;
 const BLOCK_REGEN_COOLDOWN_MS = 60_000;
 
+// Flips true once the first valid session/PO token is in place. Until then the
+// startup bootstrap loop is the sole session generator; the block- and
+// proxy-switch-triggered regenerations stay disarmed so they can't spawn a
+// second generator that races the bootstrap.
+let initialSessionReady = false;
+
 // Per-proxy session cache, used only when proxy_pool.switch_proxy_on_limit is
 // on. Each egress proxy keeps its own session (Innertube client + minter, whose
 // visitor_data/PO token were minted from that proxy's IP), so a rate-limit hop
@@ -160,6 +167,7 @@ async function regenerateSession(reason: string): Promise<void> {
         }
         sharedState.set(newClient, newMinter);
         sessionGeneratedAtMs = Date.now();
+        initialSessionReady = true;
 
         // Cache this session under the egress proxy it was minted through, so a
         // later hop back to that proxy reuses it (see onActiveProxyChange).
@@ -198,20 +206,68 @@ if (!innertubeClientOauthEnabled) {
     if (innertubeClientJobPoTokenEnabled) {
         // Initialize tokenMinter in background to not block server startup
         logInfo(CTX.PO_TOKEN, "Starting generation in background...");
+
+        // Before each retry, rotate to a fresh egress IP so a blocked proxy
+        // doesn't get re-pinned attempt after attempt (a single block is only
+        // 1 of the 3 failures that blacklist a proxy, so without this the
+        // bootstrap keeps attesting through the same blocked IP). No-op when no
+        // proxy pool is configured.
+        const usePool = config.networking.proxy_pool.enabled &&
+            config.networking.proxy_pool.proxies.length > 0;
+        const bootstrapAttempt = async () => {
+            try {
+                return await poTokenGenerate(config, metrics);
+            } catch (err) {
+                if (usePool) {
+                    await rotateSessionEgressProxy(config).catch(() => {});
+                }
+                throw err;
+            }
+        };
+
+        // Faster startup cadence than the steady-state regen: retry quickly
+        // (≤10s apart, no 60s waits) and give enough attempts to sweep the
+        // whole pool a couple of times looking for a non-blocked proxy. If it
+        // still can't mint a token, the scheduled cron remains the long-term
+        // fallback (it keeps retrying every `frequency`).
+        const bootstrapMaxAttempts = usePool
+            ? Math.min(Math.max(config.networking.proxy_pool.proxies.length * 2, 6), 15)
+            : 6;
         retry(
-            poTokenGenerate.bind(
-                poTokenGenerate,
-                config,
-                metrics,
-            ),
-            { minTimeout: 1_000, maxTimeout: 60_000, multiplier: 5, jitter: 0 },
+            bootstrapAttempt,
+            {
+                maxAttempts: bootstrapMaxAttempts,
+                minTimeout: 1_000,
+                maxTimeout: 10_000,
+                multiplier: 2,
+                jitter: 0.2,
+            },
         ).then((result) => {
             sharedState.set(result.innertubeClient, result.tokenMinter);
             sessionGeneratedAtMs = Date.now();
+            initialSessionReady = true;
             tokenMinterReadyResolve?.();
         }).catch((err) => {
             logError(CTX.PO_TOKEN, "Failed to initialize", err);
             metrics?.potokenGenerationFailure.inc();
+            // Distinguish "startup is just slow" from "the whole proxy pool is
+            // burned": if we rotated through every proxy (bootstrapMaxAttempts
+            // ≥ pool size) and still couldn't mint a token, none of the
+            // configured egress IPs returned a clean response. That points at
+            // the pool itself, not a transient hiccup — surface it loudly.
+            if (usePool) {
+                logError(
+                    CTX.PO_TOKEN,
+                    `Swept the entire proxy pool (${config.networking.proxy_pool.proxies.length} ` +
+                        `${
+                            config.networking.proxy_pool.proxies.length === 1
+                                ? "proxy"
+                                : "proxies"
+                        }) over ${bootstrapMaxAttempts} attempts without minting a ` +
+                        `PO token — all egress IPs appear blocked. Consider rotating/refreshing ` +
+                        `the proxy pool. The scheduled job will keep retrying.`,
+                );
+            }
             tokenMinterReadyResolve?.();
         });
     } else {
@@ -225,6 +281,10 @@ if (!innertubeClientOauthEnabled) {
     // waiting for the next scheduled tick. Debounced so a burst of blocked
     // requests can't trigger a regeneration storm.
     setOnYouTubeBlock(() => {
+        // While the startup bootstrap is still searching for a valid token it
+        // is the sole generator; don't let a block detected during that search
+        // spawn a competing regeneration.
+        if (!initialSessionReady) return;
         const now = Date.now();
         if (now - lastBlockRegenMs < BLOCK_REGEN_COOLDOWN_MS) return;
         lastBlockRegenMs = now;
@@ -248,6 +308,10 @@ if (!innertubeClientOauthEnabled) {
     // otherwise mint a new one in the background pinned to the new proxy.
     if (perProxySessionsEnabled) {
         setOnActiveProxyChange((proxyUrl: string) => {
+            // The bootstrap loop rotates the egress proxy itself while hunting
+            // for a token; ignore those hops until a session is established so
+            // we don't kick off a parallel regeneration mid-bootstrap.
+            if (!initialSessionReady) return;
             const lifetimeMs =
                 config.jobs.youtube_session.session_lifetime_hours *
                 60 * 60 * 1000;

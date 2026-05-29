@@ -68,6 +68,10 @@ let poolActiveProxySelector:
     | ((excluded?: Set<string>) => Promise<string | null>)
     | null = null;
 
+// When the proxy pool is active, advances the pinned egress proxy to a fresh
+// healthy one (see rotateSessionEgressProxy). Null when no pool is configured.
+let rotateActiveEgressProxy: (() => Promise<string | null>) | null = null;
+
 /**
  * Resolve the egress proxy the current session should use, so the PO-token
  * worker can attest from the same IP the player/stream requests go through.
@@ -81,6 +85,26 @@ export async function getSessionEgressProxy(
     getFetchClient(config);
     if (poolActiveProxySelector) {
         return await poolActiveProxySelector();
+    }
+    return config.networking.proxy ?? null;
+}
+
+/**
+ * Advance the session's egress proxy to a *different* healthy proxy in the
+ * pool, returning the newly-pinned proxy URL. Used by the startup PO-token
+ * bootstrap to sweep the pool for a non-blocked IP between attempts: a single
+ * detected block is only one of the three failures needed to blacklist a
+ * proxy, so without this the bootstrap would keep re-pinning (and re-attesting
+ * through) the same blocked proxy. Returns the single configured proxy / null
+ * when no pool is in use (nothing to rotate).
+ */
+export async function rotateSessionEgressProxy(
+    config: Config,
+): Promise<string | null> {
+    // Ensure the pool (and its rotator) has been initialised.
+    getFetchClient(config);
+    if (rotateActiveEgressProxy) {
+        return await rotateActiveEgressProxy();
     }
     return config.networking.proxy ?? null;
 }
@@ -327,6 +351,30 @@ export const getFetchClient = (config: Config, metrics?: Metrics): FetchFn => {
         // Expose the selector so the session bootstrap can pin to this pool's
         // active egress proxy (see getSessionEgressProxy).
         poolActiveProxySelector = ensureActiveProxy;
+
+        // Expose a rotator so the startup bootstrap can force a hop to a fresh
+        // egress IP between PO-token attempts (see rotateSessionEgressProxy).
+        rotateActiveEgressProxy = async (): Promise<string | null> => {
+            const previous = activeProxyUrl;
+            activeProxyUrl = null;
+            // Exclude the proxy we were just on so we land on a different IP;
+            // ensureActiveProxy health-probes the candidate before pinning it.
+            const excluded = previous
+                ? new Set<string>([previous])
+                : new Set<string>();
+            const next = await ensureActiveProxy(excluded);
+            if (next) {
+                logInfo(
+                    CTX.PROXY,
+                    `Rotated session egress proxy to ${maskProxyUrl(next)}`,
+                );
+                return next;
+            }
+            // No other healthy proxy (single-proxy pool, or all others
+            // unhealthy): fall back to whatever is available rather than
+            // leaving the session with no egress proxy.
+            return await ensureActiveProxy();
+        };
 
         const fn: FetchFn = async (
             input: FetchInputParameter,

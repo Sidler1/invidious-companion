@@ -378,3 +378,67 @@ Deno.test({
         }
     },
 });
+
+Deno.test({
+    name:
+        "rotateSessionEgressProxy - advances the pinned egress proxy to a different one",
+    fn: async () => {
+        const originalFetch = globalThis.fetch;
+        const originalCreateHttpClient = Deno.createHttpClient;
+
+        Deno.createHttpClient = (() => {
+            return {} as unknown as Deno.HttpClient;
+        }) as typeof Deno.createHttpClient;
+
+        // Every probe (generate_204) reports healthy, so both proxies stay in
+        // rotation and the rotator must move off the pinned one by exclusion.
+        globalThis.fetch = (() => {
+            return Promise.resolve(
+                new Response(JSON.stringify({ status: "OK" }), {
+                    status: 200,
+                    headers: { "content-type": "application/json" },
+                }),
+            );
+        }) as typeof fetch;
+
+        try {
+            const { getSessionEgressProxy, rotateSessionEgressProxy } =
+                await import("../lib/helpers/getFetchClient.ts");
+            const { parseConfig } = await import("../lib/helpers/config.ts");
+            Deno.env.set("SERVER_SECRET_KEY", "aaaaaaaaaaaaaaaa");
+
+            const config = await parseConfig();
+            const proxies = [
+                "http://u:p@proxy-a:8080",
+                "http://u:p@proxy-b:8080",
+            ];
+            const testConfig = {
+                ...config,
+                networking: {
+                    ...config.networking,
+                    proxy_pool: {
+                        enabled: true,
+                        rotation: "round-robin" as const,
+                        health_check: true,
+                        switch_proxy_on_limit: false,
+                        proxies,
+                    },
+                },
+            };
+
+            const first = await getSessionEgressProxy(testConfig);
+            const second = await rotateSessionEgressProxy(testConfig);
+
+            assertExists(first);
+            assertExists(second);
+            assertEquals(proxies.includes(first!), true);
+            assertEquals(proxies.includes(second!), true);
+            // The whole point of rotation: land on a different egress IP.
+            assertEquals(first === second, false);
+        } finally {
+            globalThis.fetch = originalFetch;
+            Deno.createHttpClient = originalCreateHttpClient;
+        }
+    },
+    sanitizeResources: false,
+});
