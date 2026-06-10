@@ -74,6 +74,88 @@ Deno.test("Config validation additions", async (t) => {
         }
     });
 
+    await t.step("player_fallback_clients defaults sensibly", async () => {
+        await withTempConfig(
+            `[server]\nsecret_key = "1234567890abcdef"\n`,
+            async () => {
+                const config = await parseConfig();
+                assertEquals(
+                    config.jobs.youtube_session.player_fallback_clients,
+                    ["TV_SIMPLY", "MWEB", "ANDROID_VR"],
+                );
+            },
+        );
+    });
+
+    await t.step("player_fallback_clients accepts a TOML array", async () => {
+        await withTempConfig(
+            `[server]\nsecret_key = "1234567890abcdef"\n\n[jobs.youtube_session]\nplayer_fallback_clients = ["MWEB", "TV_SIMPLY"]\n`,
+            async () => {
+                const config = await parseConfig();
+                assertEquals(
+                    config.jobs.youtube_session.player_fallback_clients,
+                    ["MWEB", "TV_SIMPLY"],
+                );
+            },
+        );
+    });
+
+    await t.step(
+        "player_fallback_clients parses a comma-separated env var",
+        async () => {
+            await withTempConfig(
+                `[server]\nsecret_key = "1234567890abcdef"\n`,
+                async () => {
+                    Deno.env.set(
+                        "JOBS_YOUTUBE_SESSION_PLAYER_FALLBACK_CLIENTS",
+                        "TV_SIMPLY, ANDROID_VR",
+                    );
+                    try {
+                        const config = await parseConfig();
+                        assertEquals(
+                            config.jobs.youtube_session.player_fallback_clients,
+                            ["TV_SIMPLY", "ANDROID_VR"],
+                        );
+                    } finally {
+                        Deno.env.delete(
+                            "JOBS_YOUTUBE_SESSION_PLAYER_FALLBACK_CLIENTS",
+                        );
+                    }
+                },
+            );
+        },
+    );
+
+    await t.step(
+        "player_fallback_clients rejects non-uppercase client names",
+        async () => {
+            await withTempConfig(
+                `[server]\nsecret_key = "1234567890abcdef"\n\n[jobs.youtube_session]\nplayer_fallback_clients = ["mweb"]\n`,
+                async () => {
+                    try {
+                        await parseConfig();
+                        assert(
+                            false,
+                            "lowercase client name should be rejected",
+                        );
+                    } catch (error) {
+                        assert(
+                            error instanceof Error &&
+                                error.message.includes(
+                                    "player_fallback_clients",
+                                ),
+                            `Should get validation error for player_fallback_clients, got: ${
+                                error instanceof Error
+                                    ? error.message
+                                    : String(error)
+                            }`,
+                        );
+                    }
+                },
+            );
+        },
+    );
+
     await t.step("rejects missing SERVER_SECRET_KEY", async () => {
         await withTempConfig("", async () => {
             Deno.env.delete("SERVER_SECRET_KEY");

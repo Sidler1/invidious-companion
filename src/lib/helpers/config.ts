@@ -265,6 +265,36 @@ export const ConfigSchema = z.object({
             session_lifetime_hours: z.number().min(0).max(168).default(
                 envNumber("JOBS_YOUTUBE_SESSION_LIFETIME_HOURS") ?? 6,
             ),
+            // Innertube client types tried, in order, when the primary (WEB)
+            // player response is bot-blocked or carries no usable stream URLs.
+            // Which clients return un-throttled, non-SABR formats shifts from
+            // week to week (e.g. ANDROID_VR degraded to 360p-only in some
+            // regions in early 2026), so this is operator-tunable without a
+            // code change. The first client whose response has adaptive-format
+            // URLs wins, so order by quality: the default tries the TV and
+            // mobile-web JS clients before the now-unreliable ANDROID_VR as a
+            // last resort. Set via TOML array or a comma-separated env var.
+            player_fallback_clients: z.preprocess(
+                (val) => {
+                    if (val === undefined || val === null || val === "") {
+                        const envVal = Deno.env.get(
+                            "JOBS_YOUTUBE_SESSION_PLAYER_FALLBACK_CLIENTS",
+                        );
+                        if (envVal) {
+                            return envVal.split(",").map((s) => s.trim())
+                                .filter(Boolean);
+                        }
+                        return undefined;
+                    }
+                    return val;
+                },
+                z.array(
+                    z.string().regex(
+                        /^[A-Z0-9_]+$/,
+                        "Each fallback client must be an uppercase Innertube client type (e.g. TV_SIMPLY, MWEB, ANDROID_VR)",
+                    ),
+                ).default(["TV_SIMPLY", "MWEB", "ANDROID_VR"]),
+            ),
         }).strict().default({}),
     }).strict().default({}),
     youtube_session: z.object({

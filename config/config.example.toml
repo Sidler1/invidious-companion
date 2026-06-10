@@ -113,6 +113,13 @@
 # # a full re-attestation. 0 = regenerate on every cron tick (legacy behaviour).
 # # A detected block forces an immediate regeneration regardless.
 # session_lifetime_hours = 6 # env variable: JOBS_YOUTUBE_SESSION_LIFETIME_HOURS
+# # Innertube client types tried, in order, when the primary WEB response is
+# # bot-blocked or has no stream URLs. The first client returning adaptive-format
+# # URLs wins, so order by quality. ANDROID_VR is last by default because it
+# # degraded to 360p-only in some regions in early 2026. Retune as YouTube
+# # changes which clients work. env var (comma-separated):
+# # JOBS_YOUTUBE_SESSION_PLAYER_FALLBACK_CLIENTS
+# player_fallback_clients = ["TV_SIMPLY", "MWEB", "ANDROID_VR"]
 
 # [youtube_session]
 # oauth_enabled = false # env variable: YOUTUBE_SESSION_OAUTH_ENABLED

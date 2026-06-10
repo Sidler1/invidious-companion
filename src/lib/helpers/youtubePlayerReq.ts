@@ -99,11 +99,8 @@ export const youtubePlayerReq = async (
                 ? "Bot-block detected on WEB client, falling back to other YT clients"
                 : "No URLs for adaptive formats, falling back to other YT clients",
         );
-        const innertubeClientsTypeFallback = [
-            "TV_SIMPLY",
-            "ANDROID_VR",
-            "MWEB",
-        ];
+        const innertubeClientsTypeFallback =
+            config.jobs.youtube_session.player_fallback_clients;
 
         for await (const innertubeClientType of innertubeClientsTypeFallback) {
             logWarn(
