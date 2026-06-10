@@ -6,18 +6,9 @@ import {
 import type { Config } from "../helpers/config.ts";
 import { Metrics } from "../helpers/metrics.ts";
 import { CTX, logError, logInfo, logWarn } from "../helpers/log.ts";
+import { resolveAndValidateFetchClientLocation } from "../helpers/dynamicImportValidation.ts";
 
-let getFetchClientLocation = "getFetchClient";
-if (Deno.env.get("GET_FETCH_CLIENT_LOCATION")) {
-    if (Deno.env.has("DENO_COMPILED")) {
-        getFetchClientLocation = Deno.mainModule.replace("src/main.ts", "") +
-            Deno.env.get("GET_FETCH_CLIENT_LOCATION");
-    } else {
-        getFetchClientLocation = Deno.env.get(
-            "GET_FETCH_CLIENT_LOCATION",
-        ) as string;
-    }
-}
+const getFetchClientLocation = resolveAndValidateFetchClientLocation();
 const { getFetchClient, getSessionEgressProxy } = await import(
     getFetchClientLocation
 );
@@ -47,7 +38,12 @@ function createMinter(worker: TokenGeneratorWorker) {
         };
 
         const listener = (message: MessageEvent) => {
-            const parsedMessage = OutputMessageSchema.parse(message.data);
+            // Ignore messages that don't match the schema instead of throwing
+            // inside the event listener; MINT_TIMEOUT_MS covers the case where
+            // the expected reply never arrives in a valid shape.
+            const parsed = OutputMessageSchema.safeParse(message.data);
+            if (!parsed.success) return;
+            const parsedMessage = parsed.data;
             if (
                 parsedMessage.type === "content-token" &&
                 parsedMessage.requestId === requestId
@@ -102,8 +98,31 @@ export const poTokenGenerate = (
         },
     );
     workers.push(worker);
+    // Tracks whether the returned promise has settled. A throwing async event
+    // listener would surface as an unhandled rejection (killing the process)
+    // and leave the promise pending forever, so malformed messages must be
+    // handled explicitly — but only tear the worker down while it is still
+    // initialising, never under a live session.
+    let settled = false;
     worker.addEventListener("message", async (event) => {
-        const parsedMessage = OutputMessageSchema.parse(event.data);
+        const parsed = OutputMessageSchema.safeParse(event.data);
+        if (!parsed.success) {
+            logError(
+                CTX.PO_TOKEN,
+                `Malformed message from worker: ${parsed.error}`,
+            );
+            if (!settled) {
+                settled = true;
+                worker.terminate();
+                reject(
+                    new Error(
+                        `Malformed message from PO-token worker: ${parsed.error}`,
+                    ),
+                );
+            }
+            return;
+        }
+        const parsedMessage = parsed.data;
 
         if (parsedMessage.type === "ready") {
             const untypedPostMessage = worker.postMessage.bind(worker);
@@ -152,6 +171,7 @@ export const poTokenGenerate = (
         // whole session here.
         if (parsedMessage.type === "error" && !parsedMessage.requestId) {
             logError(CTX.PO_TOKEN, `Worker error: ${parsedMessage.error}`);
+            settled = true;
             worker.terminate();
             reject(parsedMessage.error);
         }
@@ -181,6 +201,7 @@ export const poTokenGenerate = (
                     const workerToKill = workers.shift();
                     workerToKill?.terminate();
                 }
+                settled = true;
                 return resolve({
                     innertubeClient: instantiatedInnertubeClient,
                     tokenMinter: minter,
@@ -190,6 +211,7 @@ export const poTokenGenerate = (
                     CTX.PO_TOKEN,
                     `Failed to get valid token, will retry: ${err}`,
                 );
+                settled = true;
                 worker.terminate();
                 reject(err);
             }

@@ -41,6 +41,12 @@ export const verifyRequest = async (
             return false;
         }
 
+        // A non-numeric timestamp would make both window comparisons below
+        // evaluate to false (NaN comparisons), silently bypassing them.
+        if (!Number.isFinite(parsedTimestampInt)) {
+            return false;
+        }
+
         // Reject timestamps older than 6 hours (replay attack protection)
         if (timestampNow - parsedTimestampInt > 6 * 60 * 60) {
             return false;

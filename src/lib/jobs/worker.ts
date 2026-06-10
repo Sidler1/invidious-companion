@@ -6,21 +6,13 @@ import { BG, buildURL, GOOG_API_KEY, USER_AGENT } from "bgutils";
 import type { WebPoSignalOutput } from "bgutils";
 import { JSDOM } from "jsdom";
 import { Innertube } from "youtubei.js";
-let getFetchClientLocation = "getFetchClient";
-if (Deno.env.get("GET_FETCH_CLIENT_LOCATION")) {
-    if (Deno.env.has("DENO_COMPILED")) {
-        getFetchClientLocation = Deno.mainModule.replace("src/main.ts", "") +
-            Deno.env.get("GET_FETCH_CLIENT_LOCATION");
-    } else {
-        getFetchClientLocation = Deno.env.get(
-            "GET_FETCH_CLIENT_LOCATION",
-        ) as string;
-    }
-}
+import { resolveAndValidateFetchClientLocation } from "../helpers/dynamicImportValidation.ts";
+
+const getFetchClientLocation = resolveAndValidateFetchClientLocation();
 
 type FetchFunction = typeof fetch;
 const { getFetchClient }: {
-    getFetchClient: (config: Config) => Promise<FetchFunction>;
+    getFetchClient: (config: Config) => FetchFunction;
 } = await import(getFetchClientLocation);
 
 // ---- Messages to send to the webworker ----
@@ -86,11 +78,19 @@ if (isWorker) {
     let minter: BG.WebPoMinter;
 
     onmessage = async (event) => {
-        const message = InputMessageSchema.parse(event.data);
-        if (message.type === "initialise") {
-            const fetchImpl: typeof fetch = await getFetchClient(
-                message.config,
+        // Don't throw on malformed messages — an uncaught error here would
+        // bubble up as a worker error event and tear down the whole session.
+        const parsed = InputMessageSchema.safeParse(event.data);
+        if (!parsed.success) {
+            console.error(
+                "[ERROR] PO-token worker received malformed message:",
+                parsed.error,
             );
+            return;
+        }
+        const message = parsed.data;
+        if (message.type === "initialise") {
+            const fetchImpl: typeof fetch = getFetchClient(message.config);
             try {
                 const {
                     sessionPoToken,

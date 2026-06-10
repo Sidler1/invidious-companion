@@ -97,8 +97,10 @@ captionsHandler.get("/:videoId", async (c) => {
             c.language_code === lang
         );
     } else {
+        // Normalize like the list above does, so tracks advertised with an
+        // empty label (undefined name.text) stay reachable.
         match = captionsTrackArray.find((c: CaptionTrackData) =>
-            c.name.text === label
+            (c.name.text || "") === label
         );
     }
 

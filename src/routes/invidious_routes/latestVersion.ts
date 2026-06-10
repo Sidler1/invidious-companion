@@ -78,6 +78,14 @@ latestVersion.get("/", async (c) => {
         streamingData.adaptive_formats,
     );
 
+    // Without this guard the handler would fall through without returning a
+    // response, surfacing as an opaque "context not finalized" 500.
+    if (!availableFormats) {
+        throw new HTTPException(500, {
+            res: new Response("No streaming data available for: " + id),
+        });
+    }
+
     const numericItag = Number(itag);
     const selectedItagFormat = availableFormats?.filter((i) =>
         i.itag == numericItag

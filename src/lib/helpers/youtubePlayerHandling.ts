@@ -4,17 +4,9 @@ import { compress, decompress } from "brotli";
 import type { TokenMinter } from "../jobs/potoken.ts";
 import { Metrics } from "./metrics.ts";
 import { CTX, logError } from "./log.ts";
-let youtubePlayerReqLocation = "youtubePlayerReq";
-if (Deno.env.get("YT_PLAYER_REQ_LOCATION")) {
-    if (Deno.env.has("DENO_COMPILED")) {
-        youtubePlayerReqLocation = Deno.mainModule.replace("src/main.ts", "") +
-            Deno.env.get("YT_PLAYER_REQ_LOCATION");
-    } else {
-        youtubePlayerReqLocation = Deno.env.get(
-            "YT_PLAYER_REQ_LOCATION",
-        ) as string;
-    }
-}
+import { resolveAndValidatePlayerReqLocation } from "./dynamicImportValidation.ts";
+
+const youtubePlayerReqLocation = resolveAndValidatePlayerReqLocation();
 const { youtubePlayerReq } = await import(youtubePlayerReqLocation);
 
 import type { Config } from "./config.ts";

@@ -508,10 +508,23 @@ export const getFetchClient = (config: Config, metrics?: Metrics): FetchFn => {
                 client = Deno.createHttpClient(clientOptions);
             }
 
-            const fetchRes = await fetchShim(config, retryOptions, input, {
-                client,
-                ...init,
-            });
+            let fetchRes: Response;
+            try {
+                fetchRes = await fetchShim(config, retryOptions, input, {
+                    client,
+                    ...init,
+                });
+            } catch (e) {
+                if (!reusableClient) client.close();
+                throw e;
+            }
+            // Per-request clients (IPv6 rotation) would otherwise never be
+            // closed and leak a socket/FD per request. The client must stay
+            // open until the body has been streamed, so close it only when
+            // the response settles.
+            if (!reusableClient) {
+                fetchRes = closeClientWhenDone(fetchRes, client);
+            }
 
             // Detect YouTube block signals even on single-proxy path.
             // Previously this detection only existed in the proxy_pool path,
@@ -545,6 +558,43 @@ export const getFetchClient = (config: Config, metrics?: Metrics): FetchFn => {
     cachedConfigRef = config;
     return fn;
 };
+
+/**
+ * Tie the lifetime of a per-request HttpClient to its response: close the
+ * client once the body has been fully read, cancelled, or errored. Closing
+ * earlier would abort the in-flight body stream; never closing leaks a
+ * socket/FD per request (fatal under IPv6 rotation, where a fresh client is
+ * created for every request).
+ */
+function closeClientWhenDone(
+    res: Response,
+    client: Deno.HttpClient,
+): Response {
+    const close = () => {
+        try {
+            client.close();
+        } catch {
+            // Already closed.
+        }
+    };
+    if (!res.body) {
+        close();
+        return res;
+    }
+    const monitored = res.body.pipeThrough(
+        new TransformStream({ flush: close, cancel: close }),
+    );
+    const wrapped = new Response(monitored, {
+        status: res.status,
+        statusText: res.statusText,
+        headers: res.headers,
+    });
+    // new Response() drops these read-only fetch metadata fields; callers
+    // (e.g. youtubei.js) may inspect them.
+    Object.defineProperty(wrapped, "url", { value: res.url });
+    Object.defineProperty(wrapped, "redirected", { value: res.redirected });
+    return wrapped;
+}
 
 /**
  * Check if a YouTube response contains bot detection signals.
