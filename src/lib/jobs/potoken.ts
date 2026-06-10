@@ -85,7 +85,15 @@ export type TokenMinter = ReturnType<typeof createMinter>;
 export const poTokenGenerate = (
     config: Config,
     metrics: Metrics | undefined,
-): Promise<{ innertubeClient: Innertube; tokenMinter: TokenMinter }> => {
+): Promise<
+    {
+        innertubeClient: Innertube;
+        tokenMinter: TokenMinter;
+        // YouTube's estimated integrity-token TTL (seconds), forwarded from the
+        // worker so the caller can refresh the session before it expires.
+        sessionTtlSecs?: number;
+    }
+> => {
     const { promise, resolve, reject } = Promise.withResolvers<
         Awaited<ReturnType<typeof poTokenGenerate>>
     >();
@@ -205,6 +213,7 @@ export const poTokenGenerate = (
                 return resolve({
                     innertubeClient: instantiatedInnertubeClient,
                     tokenMinter: minter,
+                    sessionTtlSecs: parsedMessage.estimatedTtlSecs,
                 });
             } catch (err) {
                 logWarn(

@@ -41,6 +41,10 @@ const OutputInitialiseSchema = z.object({
     type: z.literal("initialised"),
     sessionPoToken: z.string(),
     visitorData: z.string(),
+    // YouTube's own estimated lifetime (seconds) for the integrity token,
+    // from the GenerateIT response. Drives session-refresh cadence on the
+    // parent side; absent when YouTube didn't return a usable value.
+    estimatedTtlSecs: z.number().optional(),
 }).strict();
 
 const OutputContentTokenSchema = z.object({
@@ -96,6 +100,7 @@ if (isWorker) {
                     sessionPoToken,
                     visitorData,
                     generatedMinter,
+                    estimatedTtlSecs,
                 } = await setup({
                     fetchImpl,
                     innertubeClientCookies:
@@ -109,6 +114,7 @@ if (isWorker) {
                     type: "initialised",
                     sessionPoToken,
                     visitorData,
+                    estimatedTtlSecs,
                 });
             } catch (err) {
                 postMessage({ type: "error", error: err });
@@ -249,6 +255,16 @@ async function setup(
         integrityToken: integrityTokenBody[0],
     }, webPoSignalOutput);
 
+    // GenerateIT returns
+    // [integrityToken, estimatedTtlSecs, mintRefreshThreshold, fallbackToken].
+    // Read the TTL defensively from the `.rest()` tail so an unexpected shape
+    // can never break attestation — a missing/odd value just disables the
+    // server-driven refresh hint and the configured lifetime is used instead.
+    const ttlRaw = integrityTokenBody[1];
+    const estimatedTtlSecs = typeof ttlRaw === "number" && ttlRaw > 0
+        ? ttlRaw
+        : undefined;
+
     const sessionPoToken = await integrityTokenBasedMinter.mintAsWebsafeString(
         visitorData,
     );
@@ -257,5 +273,6 @@ async function setup(
         sessionPoToken,
         visitorData,
         generatedMinter: integrityTokenBasedMinter,
+        estimatedTtlSecs,
     };
 }

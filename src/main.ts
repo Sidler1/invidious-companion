@@ -122,6 +122,25 @@ let sessionRegenInFlight = false;
 let lastBlockRegenMs = 0;
 const BLOCK_REGEN_COOLDOWN_MS = 60_000;
 
+// YouTube's own estimated integrity-token TTL (seconds) for the current
+// session, reported by the PO-token worker. Undefined when there is no PO
+// token (OAuth / po_token disabled) or YouTube didn't return one.
+let sessionTtlSecs: number | undefined;
+
+// Effective session lifetime: the smaller of the operator's configured cap and
+// YouTube's estimated integrity-token TTL (when the worker reported one).
+// Honouring the server estimate means we refresh before the token actually
+// expires instead of trusting a fixed guess, while session_lifetime_hours
+// stays an upper bound on how stale a session may get.
+function effectiveSessionLifetimeMs(): number {
+    const configMs = config.jobs.youtube_session.session_lifetime_hours *
+        60 * 60 * 1000;
+    if (sessionTtlSecs && sessionTtlSecs > 0) {
+        return Math.min(configMs, sessionTtlSecs * 1000);
+    }
+    return configMs;
+}
+
 // Flips true once the first valid session/PO token is in place. Until then the
 // startup bootstrap loop is the sole session generator; the block- and
 // proxy-switch-triggered regenerations stay disarmed so they can't spawn a
@@ -147,10 +166,12 @@ async function regenerateSession(reason: string): Promise<void> {
     try {
         let newClient: Innertube;
         let newMinter: TokenMinter | undefined;
+        let newTtlSecs: number | undefined;
         if (innertubeClientJobPoTokenEnabled) {
             const result = await poTokenGenerate(config, metrics);
             newClient = result.innertubeClient;
             newMinter = result.tokenMinter;
+            newTtlSecs = result.sessionTtlSecs;
         } else {
             newClient = await Innertube.create({
                 enable_session_cache: false,
@@ -167,6 +188,7 @@ async function regenerateSession(reason: string): Promise<void> {
         }
         sharedState.set(newClient, newMinter);
         sessionGeneratedAtMs = Date.now();
+        sessionTtlSecs = newTtlSecs;
         initialSessionReady = true;
 
         // Cache this session under the egress proxy it was minted through, so a
@@ -245,6 +267,7 @@ if (!innertubeClientOauthEnabled) {
         ).then((result) => {
             sharedState.set(result.innertubeClient, result.tokenMinter);
             sessionGeneratedAtMs = Date.now();
+            sessionTtlSecs = result.sessionTtlSecs;
             initialSessionReady = true;
             tokenMinterReadyResolve?.();
         }).catch((err) => {
@@ -312,9 +335,7 @@ if (!innertubeClientOauthEnabled) {
             // for a token; ignore those hops until a session is established so
             // we don't kick off a parallel regeneration mid-bootstrap.
             if (!initialSessionReady) return;
-            const lifetimeMs =
-                config.jobs.youtube_session.session_lifetime_hours *
-                60 * 60 * 1000;
+            const lifetimeMs = effectiveSessionLifetimeMs();
             const cached = perProxySessions.get(proxyUrl);
             if (cached && Date.now() - cached.builtAt < lifetimeMs) {
                 sharedState.set(cached.client, cached.minter);
@@ -340,12 +361,11 @@ if (!innertubeClientOauthEnabled) {
         { backoffSchedule: [5_000, 15_000, 60_000, 180_000] },
         async () => {
             // Skip the expensive full regeneration while the current session is
-            // still within its configured lifetime. The alive worker keeps
+            // still within its effective lifetime (the smaller of the configured
+            // cap and YouTube's estimated token TTL). The alive worker keeps
             // minting per-video content tokens in the meantime; early token
             // expiry or a detected block forces a regen out of band.
-            const lifetimeMs =
-                config.jobs.youtube_session.session_lifetime_hours *
-                60 * 60 * 1000;
+            const lifetimeMs = effectiveSessionLifetimeMs();
             const age = Date.now() - sessionGeneratedAtMs;
             if (sessionGeneratedAtMs > 0 && age < lifetimeMs) {
                 logInfo(
