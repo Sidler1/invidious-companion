@@ -1,5 +1,5 @@
 import { assert, assertEquals } from "./deps.ts";
-import { getKv } from "../lib/helpers/kv.ts";
+import { closeKv, getKv } from "../lib/helpers/kv.ts";
 import type { Config } from "../lib/helpers/config.ts";
 
 Deno.test("getKv opens the store under the configured cache directory", async () => {
@@ -18,6 +18,8 @@ Deno.test("getKv opens the store under the configured cache directory", async ()
     );
     assert(stat.isFile, "KV store file should be created in the cache dir");
 
-    // The handle is memoized module-wide and shared with later tests in the
-    // same process, so it is intentionally neither closed nor removed here.
+    // Clear the module-wide memo so later tests in this process open their
+    // own store instead of reusing this (closed) handle.
+    await closeKv();
+    await Deno.remove(cacheDirectory, { recursive: true });
 });

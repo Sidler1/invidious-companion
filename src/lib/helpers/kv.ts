@@ -42,3 +42,12 @@ export const getKv = (config: Config): Promise<Deno.Kv> => {
     }
     return kvPromise;
 };
+
+// Closes the memoized handle (if any) and clears the memo so a later
+// getKv() call opens a fresh store. Used on shutdown and in tests.
+export const closeKv = async (): Promise<void> => {
+    if (!kvPromise) return;
+    const pending = kvPromise;
+    kvPromise = undefined;
+    (await pending).close();
+};
