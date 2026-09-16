@@ -105,10 +105,16 @@ dashManifest.get("/:videoId", async (c) => {
                     ([key]) => PRIVATE_PARAM_NAMES.includes(key),
                 );
                 if (privateParams.length > 0) {
-                    preEncryptedParams = await encryptQuery(
-                        JSON.stringify(privateParams),
-                        config,
-                    );
+                    try {
+                        preEncryptedParams = await encryptQuery(
+                            JSON.stringify(privateParams),
+                            config,
+                        );
+                    } catch {
+                        throw new HTTPException(500, {
+                            res: new Response("Failed to encrypt query."),
+                        });
+                    }
                 }
             }
         }

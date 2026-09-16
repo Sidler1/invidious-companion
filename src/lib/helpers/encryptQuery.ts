@@ -7,7 +7,8 @@ import { decryptGcm, encryptGcm } from "./crypto.ts";
  * Encrypt query parameters using AES-256-GCM.
  *
  * Ciphertext format: base64( IV[12] || ciphertext || authTag[16] ), see
- * crypto.ts. Returns "" on failure.
+ * crypto.ts. Throws on failure: a silent "" would let callers redirect the
+ * client to a URL with no PO token and surface as a confusing 400 later.
  */
 export const encryptQuery = async (
     queryParams: string,
@@ -17,7 +18,7 @@ export const encryptQuery = async (
         return encodeBase64(await encryptGcm(queryParams, config));
     } catch (err) {
         logError(CTX.ENCRYPT, "Failed to encrypt query parameters", err);
-        return "";
+        throw new Error("Query encryption failed");
     }
 };
 

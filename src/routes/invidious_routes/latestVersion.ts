@@ -110,10 +110,17 @@ latestVersion.get("/", async (c) => {
                 const privateParams = [...queryParams].filter(([key]) =>
                     PRIVATE_PARAM_NAMES.includes(key)
                 );
-                const encryptedParams = await encryptQuery(
-                    JSON.stringify(privateParams),
-                    config,
-                );
+                let encryptedParams: string;
+                try {
+                    encryptedParams = await encryptQuery(
+                        JSON.stringify(privateParams),
+                        config,
+                    );
+                } catch {
+                    throw new HTTPException(500, {
+                        res: new Response("Failed to encrypt query."),
+                    });
+                }
 
                 for (const param of PRIVATE_PARAM_NAMES) {
                     queryParams.delete(param);

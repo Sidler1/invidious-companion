@@ -57,3 +57,25 @@ Deno.test("encryptQuery/decryptQuery round-trip via base64", async () => {
 Deno.test("decryptQuery returns an empty string on garbage input", async () => {
     assertEquals(await decryptQuery("not-base64!!", config), "");
 });
+
+Deno.test("encryptQuery throws when the crypto primitive fails", async () => {
+    const original = crypto.subtle.encrypt;
+    Object.defineProperty(crypto.subtle, "encrypt", {
+        value: () => Promise.reject(new Error("simulated crypto failure")),
+        configurable: true,
+        writable: true,
+    });
+    try {
+        await assertRejects(
+            () => encryptQuery("pot=abc", config),
+            Error,
+            "Query encryption failed",
+        );
+    } finally {
+        Object.defineProperty(crypto.subtle, "encrypt", {
+            value: original,
+            configurable: true,
+            writable: true,
+        });
+    }
+});
