@@ -2,6 +2,13 @@ import { Innertube } from "youtubei.js";
 import type { CaptionTrackData } from "youtubei.js/PlayerCaptionsTracklist";
 import { HTTPException } from "hono/http-exception";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
+import { CTX, logWarn } from "./log.ts";
+
+// The only origin a caption track's base_url may point at. The URL comes
+// from the (cacheable) player response; without this check a manipulated
+// response could receive a freshly minted, video-bound PO token.
+const CAPTIONS_ALLOWED_HOST = "www.youtube.com";
+const INVALID_CAPTION_URL_MESSAGE = "Invalid caption track URL.";
 
 function createTemporalDuration(milliseconds: number) {
     return new Temporal.Duration(
@@ -43,6 +50,35 @@ function shiftVttToCenter(vtt: string): string {
     return updatedLines.join("\n");
 }
 
+/**
+ * Build the timedtext URL for a caption track, attaching the PO token only
+ * after confirming the track really points at YouTube.
+ */
+export function buildCaptionUrl(
+    baseUrl: string,
+    poToken: string,
+    clientName: string,
+): URL {
+    let url: URL;
+    try {
+        url = new URL(baseUrl);
+    } catch {
+        throw new HTTPException(502, {
+            res: new Response(INVALID_CAPTION_URL_MESSAGE),
+        });
+    }
+    if (url.protocol !== "https:" || url.hostname !== CAPTIONS_ALLOWED_HOST) {
+        throw new HTTPException(502, {
+            res: new Response(INVALID_CAPTION_URL_MESSAGE),
+        });
+    }
+    url.searchParams.set("fmt", "vtt");
+    url.searchParams.set("potc", "1");
+    url.searchParams.set("pot", poToken);
+    url.searchParams.set("c", clientName);
+    return url;
+}
+
 export async function handleTranscripts(
     innertubeClient: Innertube,
     videoId: string,
@@ -51,14 +87,30 @@ export async function handleTranscripts(
     clientName?: string,
 ) {
     if (poToken && clientName) {
-        const baseUrl = selectedCaption.base_url;
-        const url = `${baseUrl}&fmt=vtt&potc=1&pot=${poToken}&c=${clientName}`;
+        const url = buildCaptionUrl(
+            selectedCaption.base_url,
+            poToken,
+            clientName,
+        );
 
-        const urlObj = new URL(url);
-
-        const response = await innertubeClient.session.http.fetch(urlObj, {
-            method: "GET",
-        });
+        let response: Response;
+        try {
+            response = await innertubeClient.session.http.fetch(url, {
+                method: "GET",
+            });
+        } catch (err) {
+            // Never let the raw fetch error escape: Deno embeds the full URL
+            // (including pot=) in its message.
+            logWarn(
+                CTX.CAPTIONS,
+                `Caption fetch failed for ${videoId}: ${
+                    err instanceof Error ? err.message : String(err)
+                }`,
+            );
+            throw new HTTPException(502, {
+                res: new Response("Failed to fetch captions."),
+            });
+        }
 
         if (!response.ok) {
             throw new HTTPException(response.status as ContentfulStatusCode, {
@@ -66,7 +118,7 @@ export async function handleTranscripts(
             });
         }
 
-        let vttText = await response.text();
+        const vttText = await response.text();
 
         if (!vttText.startsWith("WEBVTT")) {
             throw new HTTPException(404, {
@@ -74,9 +126,7 @@ export async function handleTranscripts(
             });
         }
 
-        vttText = shiftVttToCenter(vttText);
-
-        return vttText;
+        return shiftVttToCenter(vttText);
     } else {
         const lines: string[] = ["WEBVTT"];
 
