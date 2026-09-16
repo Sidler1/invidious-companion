@@ -92,12 +92,7 @@ export class SessionLifecycle {
     // one). Honouring the server estimate means we refresh before the token
     // actually expires; session_lifetime_hours stays an upper bound.
     effectiveSessionLifetimeMs(): number {
-        const configMs = this.deps.config.jobs.youtube_session
-            .session_lifetime_hours * 60 * 60 * 1000;
-        if (this.sessionTtlSecs && this.sessionTtlSecs > 0) {
-            return Math.min(configMs, this.sessionTtlSecs * 1000);
-        }
-        return configMs;
+        return this.lifetimeMsFor(this.sessionTtlSecs);
     }
 
     isSessionFresh(): boolean {
@@ -254,12 +249,20 @@ export class SessionLifecycle {
     }
 
     private isCachedFresh(cached: CachedSession): boolean {
+        const lifetimeMs = this.lifetimeMsFor(cached.sessionTtlSecs);
+        return this.now() - cached.generatedAtMs < lifetimeMs;
+    }
+
+    // Shared formula for both the live session and cached per-proxy
+    // sessions: the smaller of the operator's configured cap and YouTube's
+    // estimated integrity-token TTL, when one was reported.
+    private lifetimeMsFor(ttlSecs: number | undefined): number {
         const configMs = this.deps.config.jobs.youtube_session
             .session_lifetime_hours * 60 * 60 * 1000;
-        const lifetimeMs = cached.sessionTtlSecs && cached.sessionTtlSecs > 0
-            ? Math.min(configMs, cached.sessionTtlSecs * 1000)
-            : configMs;
-        return this.now() - cached.generatedAtMs < lifetimeMs;
+        if (ttlSecs && ttlSecs > 0) {
+            return Math.min(configMs, ttlSecs * 1000);
+        }
+        return configMs;
     }
 
     private referencedWorkers(): Set<TerminableWorker> {
