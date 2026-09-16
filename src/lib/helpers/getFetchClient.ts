@@ -19,7 +19,6 @@ export type {
     FetchInputParameter,
     FetchReturn,
 } from "./fetchShim.ts";
-export { buildFetchSignal } from "./fetchShim.ts";
 
 // Process-wide latch: if generating an IPv6 source address ever fails (host
 // has no IPv6 support), we disable rotation permanently rather than retrying
@@ -184,7 +183,11 @@ export const getFetchClient = (config: Config, metrics?: Metrics): FetchFn => {
         return pool.fetch;
     }
 
-    // Single proxy / IPv6 path
+    // Single proxy / IPv6 path — no pool, so nothing to pin the session
+    // bootstrap's selector/rotator to.
+    poolActiveProxySelector = null;
+    rotateActiveEgressProxy = null;
+
     if (proxyAddress || (ipv6Block && ipv6Enabled)) {
         const reusableClient = proxyAddress && !ipv6Block
             ? Deno.createHttpClient({ proxy: { url: proxyAddress } })

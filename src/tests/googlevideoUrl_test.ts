@@ -62,6 +62,37 @@ Deno.test("resolveRedirectTarget", async (t) => {
     await t.step("rejects unparsable Location values", () => {
         assertEquals(resolveRedirectTarget("http://[::1", base), null);
     });
+
+    await t.step("accepts a c.youtube.com redirect target", () => {
+        assertEquals(
+            resolveRedirectTarget(
+                "https://rr1.c.youtube.com/videoplayback",
+                base,
+            ),
+            "https://rr1.c.youtube.com/videoplayback",
+        );
+    });
+
+    await t.step("rejects a c.youtube.com suffix trick", () => {
+        assertEquals(
+            resolveRedirectTarget("https://rr1.c.youtube.com.evil.com/", base),
+            null,
+        );
+    });
+
+    await t.step("rejects a redirect target with userinfo", () => {
+        assertEquals(
+            resolveRedirectTarget("https://user@rr1.googlevideo.com/", base),
+            null,
+        );
+    });
+
+    await t.step("rejects a redirect target with an explicit port", () => {
+        assertEquals(
+            resolveRedirectTarget("https://rr1.googlevideo.com:8443/", base),
+            null,
+        );
+    });
 });
 
 Deno.test("isValidExpire", async (t) => {

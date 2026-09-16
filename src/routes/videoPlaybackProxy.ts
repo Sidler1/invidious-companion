@@ -79,16 +79,41 @@ async function fetchFollowingRedirects(
     fetchClient: FetchFn,
     location: string,
     headers: Record<string, string>,
+    headerTimeoutMs: number,
 ): Promise<Response> {
     let current = location;
     for (let redirects = 0;; redirects++) {
-        const res = await fetchClient(current, {
-            method: "GET",
-            headers,
-            redirect: "manual",
-            // Video bodies can take minutes; never attach a whole-body timeout.
-            streaming: true,
-        });
+        // Header-phase-only timeout: an upstream that never sends headers
+        // would otherwise hang the handler forever (streaming: true means
+        // fetchShim attaches no timeout signal of its own). The timer is
+        // cleared right after headers come back, so it can never cut the
+        // body of a long video stream.
+        const controller = new AbortController();
+        const headerTimer = setTimeout(
+            () => controller.abort(),
+            headerTimeoutMs,
+        );
+        let res: Response;
+        try {
+            res = await fetchClient(current, {
+                method: "GET",
+                headers,
+                redirect: "manual",
+                // Video bodies can take minutes; never attach a whole-body timeout.
+                streaming: true,
+                signal: controller.signal,
+            });
+        } catch (e) {
+            const name = (e as { name?: string } | undefined)?.name;
+            if (name === "AbortError" && controller.signal.aborted) {
+                throw new HTTPException(502, {
+                    res: new Response("Upstream timeout."),
+                });
+            }
+            throw e;
+        } finally {
+            clearTimeout(headerTimer);
+        }
         const locationHeader = res.headers.get("location");
         const isRedirect = res.status >= 300 && res.status < 400 &&
             locationHeader !== null;
@@ -103,7 +128,7 @@ async function fetchFollowingRedirects(
         }
         const next = resolveRedirectTarget(locationHeader, current);
         if (!next) {
-            throw new HTTPException(400, {
+            throw new HTTPException(502, {
                 res: new Response("Invalid redirect target."),
             });
         }
@@ -181,6 +206,7 @@ videoPlaybackProxy.get("/", async (c) => {
         fetchClient,
         location,
         requestHeaders,
+        config.networking.fetch.timeout_ms,
     );
 
     // Build response headers — pass through content-type, content-length,

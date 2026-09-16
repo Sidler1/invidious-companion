@@ -9,8 +9,9 @@ export const YOUTUBE_BLOCK_SIGNALS = [
 ];
 
 /**
- * Read up to 8 KiB from the start of a (cloned) body and look for known
- * block phrases. Never called for binary content — see checkYouTubeBlock.
+ * Read the first chunk from the start of a (cloned) body, truncated to
+ * 8 KiB, and look for known block phrases — a signal beyond that first
+ * chunk is not seen. Never called for binary content — see checkYouTubeBlock.
  */
 async function bodyHasBlockSignal(response: Response): Promise<boolean> {
     try {
@@ -18,7 +19,10 @@ async function bodyHasBlockSignal(response: Response): Promise<boolean> {
         const reader = cloned.body?.getReader();
         if (!reader) return false;
         const { value } = await reader.read();
-        reader.releaseLock();
+        // Cancelling releases the lock too; releaseLock() alone would leave
+        // the tee'd branch's source (and thus the underlying stream) unread
+        // and unclosed.
+        await reader.cancel();
         if (!value) return false;
         const text = new TextDecoder().decode(value.slice(0, 8192))
             .toLowerCase();

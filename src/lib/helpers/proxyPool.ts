@@ -337,15 +337,7 @@ export function createProxyPool(deps: ProxyPoolDeps): ProxyPool {
                     deps.config,
                     deps.retryOptions,
                     input,
-                    {
-                        client,
-                        headers: init?.headers,
-                        method: init?.method,
-                        body: init?.body,
-                        redirect: init?.redirect,
-                        signal: init?.signal,
-                        streaming: init?.streaming,
-                    },
+                    { ...init, client },
                     proxyGates.get(proxyUrl),
                 );
 
@@ -375,6 +367,14 @@ export function createProxyPool(deps: ProxyPoolDeps): ProxyPool {
                 markProxySuccess(proxyUrl);
                 return fetchRes;
             } catch (e) {
+                // A caller-initiated abort (e.g. the video proxy's
+                // header-phase timeout, or the client disconnecting) is not
+                // a proxy failure — rethrow immediately without blacklisting
+                // or excluding the proxy.
+                const name = (e as { name?: string } | undefined)?.name;
+                if (init?.signal?.aborted || name === "AbortError") {
+                    throw e;
+                }
                 deps.getMetrics()?.upstreamFailures.inc();
                 markProxyFailure(proxyUrl);
                 excluded.add(proxyUrl);

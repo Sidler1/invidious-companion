@@ -442,3 +442,79 @@ Deno.test({
     },
     sanitizeResources: false,
 });
+
+Deno.test({
+    name:
+        "getFetchClient with proxy_pool - an AbortError from the caller's signal propagates without blacklisting the proxy",
+    fn: async () => {
+        const originalFetch = globalThis.fetch;
+        const originalCreateHttpClient = Deno.createHttpClient;
+        let probeCount = 0;
+
+        Deno.createHttpClient = (() => {
+            return {} as unknown as Deno.HttpClient;
+        }) as typeof Deno.createHttpClient;
+
+        globalThis.fetch = ((input: RequestInfo | URL) => {
+            const url = String(input);
+            if (url.includes("generate_204") || url.includes("/ok")) {
+                probeCount += url.includes("generate_204") ? 1 : 0;
+                return Promise.resolve(
+                    new Response(JSON.stringify({ status: "OK" }), {
+                        status: 200,
+                        headers: { "content-type": "application/json" },
+                    }),
+                );
+            }
+            return Promise.reject(new DOMException("aborted", "AbortError"));
+        }) as typeof fetch;
+
+        try {
+            const { getFetchClient } = await import(
+                "../lib/helpers/getFetchClient.ts"
+            );
+            const { parseConfig } = await import("../lib/helpers/config.ts");
+            Deno.env.set("SERVER_SECRET_KEY", "aaaaaaaaaaaaaaaa");
+
+            const config = await parseConfig();
+            const testConfig = {
+                ...config,
+                networking: {
+                    ...config.networking,
+                    proxy_pool: {
+                        enabled: true,
+                        rotation: "round-robin" as const,
+                        health_check: true,
+                        switch_proxy_on_limit: false,
+                        proxies: ["http://u:p@proxy1:8080"],
+                    },
+                },
+            };
+
+            const fetchClient = getFetchClient(testConfig);
+            const controller = new AbortController();
+
+            // More attempts than FAILURE_THRESHOLD (3): if the abort guard
+            // were missing, the third would blacklist the only proxy.
+            for (let i = 0; i < 5; i++) {
+                await assertRejects(
+                    () =>
+                        fetchClient("http://example.com/video", {
+                            signal: controller.signal,
+                        }),
+                    DOMException,
+                );
+            }
+
+            // The proxy must still be the pinned active one and healthy: a
+            // non-aborted call succeeds without a second health probe.
+            const result = await fetchClient("http://example.com/ok");
+            assertEquals(result.status, 200);
+            assertEquals(probeCount, 1);
+        } finally {
+            globalThis.fetch = originalFetch;
+            Deno.createHttpClient = originalCreateHttpClient;
+        }
+    },
+    sanitizeResources: false,
+});

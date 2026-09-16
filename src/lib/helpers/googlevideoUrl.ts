@@ -7,14 +7,22 @@
  */
 export const GOOGLEVIDEO_HOST_PATTERN = /^[\w-]+\.googlevideo\.com$/;
 
+// Invidious's valid_googlevideo_redirect? also accepts *.c.youtube.com hosts
+// (see proxy_hosts.cr) — googlevideo redirects can land there. Only used for
+// validating the `Location` header of a hop we're already on; the initial
+// `host` query param check keeps using GOOGLEVIDEO_HOST_PATTERN unchanged.
+export const GOOGLEVIDEO_REDIRECT_HOST_PATTERN =
+    /^[a-z0-9-]+\.(?:googlevideo|c\.youtube)\.com$/;
+
 export function isGooglevideoHost(host: string | undefined): boolean {
     return !!host && GOOGLEVIDEO_HOST_PATTERN.test(host);
 }
 
 /**
  * Resolve a redirect `Location` header against the request URL and accept it
- * only if it points at an https googlevideo host. Returns the absolute URL or
- * null when the target must not be followed.
+ * only if it points at an https googlevideo (or c.youtube) host, with no
+ * userinfo or explicit port. Returns the absolute URL or null when the
+ * target must not be followed.
  */
 export function resolveRedirectTarget(
     locationHeader: string,
@@ -27,7 +35,8 @@ export function resolveRedirectTarget(
         return null;
     }
     if (target.protocol !== "https:") return null;
-    if (!isGooglevideoHost(target.hostname)) return null;
+    if (target.username || target.password || target.port) return null;
+    if (!GOOGLEVIDEO_REDIRECT_HOST_PATTERN.test(target.hostname)) return null;
     return target.toString();
 }
 

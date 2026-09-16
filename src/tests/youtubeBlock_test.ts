@@ -1,4 +1,5 @@
 import { assertEquals } from "./deps.ts";
+import { checkYouTubeBlock } from "../lib/helpers/youtubeBlockDetection.ts";
 
 /**
  * Drive checkYouTubeBlock through the direct fetch path: no proxy, no pool,
@@ -133,6 +134,24 @@ Deno.test({
                     ),
                     false,
                 );
+            },
+        );
+
+        await t.step(
+            "the original response body is still fully readable after checkYouTubeBlock",
+            async () => {
+                const body =
+                    "<html>Our systems have detected unusual traffic</html>";
+                const response = new Response(body, {
+                    status: 403,
+                    headers: { "content-type": "text/html" },
+                });
+                const isBlocked = await checkYouTubeBlock(response);
+                assertEquals(isBlocked, true);
+                // bodyHasBlockSignal only reads a clone; cancelling that
+                // clone's tee branch must not cancel the source, so the
+                // original response body must still be fully readable.
+                assertEquals(await response.text(), body);
             },
         );
     },

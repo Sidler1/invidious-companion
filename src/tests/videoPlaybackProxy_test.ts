@@ -2,6 +2,9 @@ import { Hono } from "hono";
 import { assert, assertEquals } from "./deps.ts";
 import type { HonoVariables } from "../lib/types/HonoVariables.ts";
 import type { Config } from "../lib/helpers/config.ts";
+// Type-only import: pulls in main.ts's `declare module "hono"` augmentation
+// that types `config`/`metrics` on the Hono context, so `c.set(...)` below
+// type-checks. Erased at runtime — main.ts's side effects never run.
 import type {} from "../main.ts";
 
 const GV_A = "rr1---sn-a.googlevideo.com";
@@ -95,10 +98,91 @@ Deno.test("videoPlaybackProxy", async (t) => {
                 assert(
                     calls[0].url.startsWith(`https://${GV_A}/videoplayback?`),
                 );
-                // streaming: no timeout signal must be attached.
-                assertEquals(calls[0].init.signal ?? null, null);
                 assertEquals(calls[0].init.redirect, "manual");
             });
+        },
+    );
+
+    await t.step(
+        "attaches a header-phase abort signal that is not aborted once headers arrive, body still readable",
+        async () => {
+            await withProxyApp(() => videoResponse(), async (app, calls) => {
+                const res = await app.request(
+                    `/videoplayback?host=${GV_A}&c=WEB&expire=${futureExpire()}&id=abc`,
+                );
+                assertEquals(res.status, 200);
+                assert(calls[0].init.signal instanceof AbortSignal);
+                assertEquals(calls[0].init.signal?.aborted, false);
+                assertEquals(await res.text(), "video-bytes");
+            });
+        },
+    );
+
+    await t.step(
+        "returns 502 'Upstream timeout.' when headers never arrive within the configured timeout",
+        async () => {
+            const originalFetch = globalThis.fetch;
+            const originalSecret = Deno.env.get("SERVER_SECRET_KEY");
+            try {
+                Deno.env.set("SERVER_SECRET_KEY", "aaaaaaaaaaaaaaaa");
+                const { parseConfig } = await import(
+                    "../lib/helpers/config.ts"
+                );
+                const { default: videoPlaybackProxy } = await import(
+                    "../routes/videoPlaybackProxy.ts"
+                );
+                const base = await parseConfig();
+                const config: Config = {
+                    ...base,
+                    networking: {
+                        ...base.networking,
+                        proxy: null,
+                        ipv6_block: null,
+                        proxy_pool: {
+                            ...base.networking.proxy_pool,
+                            enabled: false,
+                        },
+                        fetch: { ...base.networking.fetch, timeout_ms: 1000 },
+                    },
+                };
+
+                globalThis.fetch = (
+                    (_input: RequestInfo | URL, init?: RequestInit) => {
+                        const signal = init?.signal;
+                        return new Promise<Response>((_resolve, reject) => {
+                            signal?.addEventListener("abort", () => {
+                                reject(
+                                    new DOMException(
+                                        "aborted",
+                                        "AbortError",
+                                    ),
+                                );
+                            });
+                        });
+                    }
+                ) as typeof fetch;
+
+                const app = new Hono<{ Variables: HonoVariables }>();
+                app.use("*", async (c, next) => {
+                    c.set("config", config);
+                    c.set("metrics", undefined);
+                    await next();
+                });
+                app.route("/videoplayback", videoPlaybackProxy);
+
+                const res = await app.request(
+                    `/videoplayback?host=${GV_A}&c=WEB&expire=${futureExpire()}&id=abc`,
+                );
+                assertEquals(res.status, 502);
+                assertEquals(await res.text(), "Upstream timeout.");
+            } finally {
+                globalThis.fetch = originalFetch;
+                if (originalSecret === undefined) {
+                    Deno.env.delete("SERVER_SECRET_KEY");
+                } else {
+                    Deno.env.set("SERVER_SECRET_KEY", originalSecret);
+                }
+            }
         },
     );
 
@@ -153,7 +237,7 @@ Deno.test("videoPlaybackProxy", async (t) => {
         );
     });
 
-    await t.step("returns 400 for a redirect to a foreign host", async () => {
+    await t.step("returns 502 for a redirect to a foreign host", async () => {
         await withProxyApp(
             () =>
                 new Response(null, {
@@ -164,7 +248,7 @@ Deno.test("videoPlaybackProxy", async (t) => {
                 const res = await app.request(
                     `/videoplayback?host=${GV_A}&c=WEB&expire=${futureExpire()}&id=abc`,
                 );
-                assertEquals(res.status, 400);
+                assertEquals(res.status, 502);
                 assertEquals(await res.text(), "Invalid redirect target.");
                 assertEquals(calls.length, 1);
             },
