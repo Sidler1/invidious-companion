@@ -1,4 +1,5 @@
-import { Innertube } from "youtubei.js";
+import { Innertube, type UniversalCache } from "youtubei.js";
+import { USER_AGENT } from "bgutils";
 import {
     youtubePlayerParsing,
     youtubeVideoInfo,
@@ -7,6 +8,10 @@ import type { Config } from "../helpers/config.ts";
 import { Metrics } from "../helpers/metrics.ts";
 import { CTX, logError, logInfo, logWarn } from "../helpers/log.ts";
 import { resolveAndValidateFetchClientLocation } from "../helpers/dynamicImportValidation.ts";
+import { registerWorker, releaseWorker } from "../session/workerRegistry.ts";
+
+// Kept as a re-export so existing importers (main.ts, tests) keep working.
+export { cleanupWorkers } from "../session/workerRegistry.ts";
 
 const getFetchClientLocation = resolveAndValidateFetchClientLocation();
 const { getFetchClient, getSessionEgressProxy } = await import(
@@ -15,11 +20,27 @@ const { getFetchClient, getSessionEgressProxy } = await import(
 
 import { InputMessage, OutputMessageSchema } from "./worker.ts";
 
-interface TokenGeneratorWorker extends Omit<Worker, "postMessage"> {
+/**
+ * The slice of the Worker API the generator uses. A structural interface so
+ * tests can inject a fake instead of spawning worker.ts (which needs jsdom,
+ * BotGuard and the network).
+ */
+export interface TokenGeneratorWorker {
+    addEventListener(
+        type: "message" | "messageerror",
+        listener: (event: MessageEvent) => void,
+    ): void;
+    addEventListener(
+        type: "error",
+        listener: (event: ErrorEvent) => void,
+    ): void;
+    removeEventListener(
+        type: "message",
+        listener: (event: MessageEvent) => void,
+    ): void;
     postMessage(message: InputMessage): void;
+    terminate(): void;
 }
-
-const workers: TokenGeneratorWorker[] = [];
 
 // Upper bound on how long a single content-token mint may take. Without it, a
 // worker that dies or stalls leaves the mint promise pending forever — and
@@ -27,7 +48,17 @@ const workers: TokenGeneratorWorker[] = [];
 // later callers until restart.
 const MINT_TIMEOUT_MS = 10_000;
 
-function createMinter(worker: TokenGeneratorWorker) {
+// Upper bound for a whole session generation (worker boot, BotGuard
+// attestation, integrity token, validation). A worker that never reports
+// "initialised" would otherwise leave the caller's in-flight guard set
+// forever and silently disable every later regeneration.
+const GENERATION_TIMEOUT_MS = 120_000;
+
+export function createMinter(
+    worker: TokenGeneratorWorker,
+    metrics: Metrics | undefined,
+    timeoutMs: number = MINT_TIMEOUT_MS,
+) {
     return (videoId: string): Promise<string> => {
         const { promise, resolve, reject } = Promise.withResolvers<string>();
         const requestId = crypto.randomUUID();
@@ -39,8 +70,8 @@ function createMinter(worker: TokenGeneratorWorker) {
 
         const listener = (message: MessageEvent) => {
             // Ignore messages that don't match the schema instead of throwing
-            // inside the event listener; MINT_TIMEOUT_MS covers the case where
-            // the expected reply never arrives in a valid shape.
+            // inside the event listener; the mint timeout covers the case
+            // where the expected reply never arrives in a valid shape.
             const parsed = OutputMessageSchema.safeParse(message.data);
             if (!parsed.success) return;
             const parsedMessage = parsed.data;
@@ -55,18 +86,20 @@ function createMinter(worker: TokenGeneratorWorker) {
                 parsedMessage.requestId === requestId
             ) {
                 cleanup();
+                metrics?.mintFailures.inc();
                 reject(new Error(String(parsedMessage.error)));
             }
         };
 
         const timer = setTimeout(() => {
             cleanup();
+            metrics?.mintTimeouts.inc();
             reject(
                 new Error(
-                    `Content-token mint timed out after ${MINT_TIMEOUT_MS}ms for ${videoId}`,
+                    `Content-token mint timed out after ${timeoutMs}ms for ${videoId}`,
                 ),
             );
-        }, MINT_TIMEOUT_MS);
+        }, timeoutMs);
 
         worker.addEventListener("message", listener);
         worker.postMessage({
@@ -81,37 +114,86 @@ function createMinter(worker: TokenGeneratorWorker) {
 
 export type TokenMinter = ReturnType<typeof createMinter>;
 
-// Adapted from https://github.com/LuanRT/BgUtils/blob/main/examples/node/index.ts
-export const poTokenGenerate = (
-    config: Config,
-    metrics: Metrics | undefined,
-): Promise<
-    {
-        innertubeClient: Innertube;
-        tokenMinter: TokenMinter;
-        // YouTube's estimated integrity-token TTL (seconds), forwarded from the
-        // worker so the caller can refresh the session before it expires.
-        sessionTtlSecs?: number;
-    }
-> => {
-    const { promise, resolve, reject } = Promise.withResolvers<
-        Awaited<ReturnType<typeof poTokenGenerate>>
-    >();
+export interface PoTokenGenerateOptions {
+    /** Overall generation timeout. Defaults to GENERATION_TIMEOUT_MS. */
+    timeoutMs?: number;
+    /** Test seam: supply a fake worker instead of spawning worker.ts. */
+    createWorker?: () => TokenGeneratorWorker;
+    /** Shared youtubei.js cache so the serving client reuses parsed player JS. */
+    cache?: UniversalCache;
+}
 
-    const worker: TokenGeneratorWorker = new Worker(
+export interface GeneratedPoTokenSession {
+    innertubeClient: Innertube;
+    tokenMinter: TokenMinter;
+    /** The worker that owns this session's minter. Terminated via the registry. */
+    worker: TokenGeneratorWorker;
+    /** Egress proxy the attestation was pinned to (null: direct / IPv6). */
+    egressProxyUrl: string | null;
+    // YouTube's estimated integrity-token TTL (seconds), forwarded from the
+    // worker so the caller can refresh the session before it expires.
+    sessionTtlSecs?: number;
+}
+
+const defaultCreateWorker = (): TokenGeneratorWorker =>
+    new Worker(
         new URL("./worker.ts", import.meta.url).href,
         {
             type: "module",
             name: "PO Token Generator",
         },
-    );
-    workers.push(worker);
-    // Tracks whether the returned promise has settled. A throwing async event
-    // listener would surface as an unhandled rejection (killing the process)
-    // and leave the promise pending forever, so malformed messages must be
-    // handled explicitly — but only tear the worker down while it is still
-    // initialising, never under a live session.
+    ) as unknown as TokenGeneratorWorker;
+
+// Adapted from https://github.com/LuanRT/BgUtils/blob/main/examples/node/index.ts
+export const poTokenGenerate = (
+    config: Config,
+    metrics: Metrics | undefined,
+    options: PoTokenGenerateOptions = {},
+): Promise<GeneratedPoTokenSession> => {
+    const { promise, resolve, reject } = Promise.withResolvers<
+        GeneratedPoTokenSession
+    >();
+    const timeoutMs = options.timeoutMs ?? GENERATION_TIMEOUT_MS;
+    const worker = (options.createWorker ?? defaultCreateWorker)();
+    registerWorker(worker);
+
+    // Exactly one of fail/succeed settles the promise. fail() also releases
+    // the worker; succeed() leaves it alive because the minter posts to it.
     let settled = false;
+    const fail = (err: unknown): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(generationTimer);
+        releaseWorker(worker);
+        reject(err instanceof Error ? err : new Error(String(err)));
+    };
+    const succeed = (session: GeneratedPoTokenSession): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(generationTimer);
+        resolve(session);
+    };
+
+    const generationTimer = setTimeout(() => {
+        fail(new Error(`PO-token generation timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+
+    // A worker-level failure (module load error, an exception outside the
+    // worker's own try/catch) surfaces here, not as a message. Without this
+    // listener it would either crash the process or leave us pending forever.
+    worker.addEventListener("error", (event) => {
+        event.preventDefault();
+        logError(CTX.PO_TOKEN, `Worker crashed: ${event.message}`);
+        fail(new Error(`PO-token worker crashed: ${event.message}`));
+    });
+    worker.addEventListener("messageerror", () => {
+        fail(new Error("PO-token worker sent an unserialisable message"));
+    });
+
+    // Egress proxy the attestation is pinned to; the caller keys its per-proxy
+    // session cache on this instead of re-resolving it after the fact.
+    let egressProxyUrl: string | null = config.networking.proxy ?? null;
+
     worker.addEventListener("message", async (event) => {
         const parsed = OutputMessageSchema.safeParse(event.data);
         if (!parsed.success) {
@@ -119,58 +201,22 @@ export const poTokenGenerate = (
                 CTX.PO_TOKEN,
                 `Malformed message from worker: ${parsed.error}`,
             );
-            if (!settled) {
-                settled = true;
-                worker.terminate();
-                reject(
-                    new Error(
-                        `Malformed message from PO-token worker: ${parsed.error}`,
-                    ),
-                );
-            }
+            fail(
+                new Error(
+                    `Malformed message from PO-token worker: ${parsed.error}`,
+                ),
+            );
             return;
         }
         const parsedMessage = parsed.data;
 
         if (parsedMessage.type === "ready") {
-            const untypedPostMessage = worker.postMessage.bind(worker);
-            worker.postMessage = (message: InputMessage) =>
-                untypedPostMessage(message);
-
-            // Pin the worker's BotGuard attestation to the same egress proxy
-            // the request path will use, so the visitor_data / PO token are
-            // minted from the IP that later presents them. Only the failover
-            // proxy pool needs this; single-proxy/direct are already
-            // consistent and IPv6 rotation is per-request by design.
-            let workerConfig = config;
-            if (
-                config.networking.proxy_pool.enabled &&
-                config.networking.proxy_pool.proxies.length > 0
-            ) {
-                try {
-                    const sessionProxy = await getSessionEgressProxy(config);
-                    if (sessionProxy) {
-                        workerConfig = {
-                            ...config,
-                            networking: {
-                                ...config.networking,
-                                proxy: sessionProxy,
-                                proxy_pool: {
-                                    ...config.networking.proxy_pool,
-                                    enabled: false,
-                                },
-                            },
-                        };
-                    }
-                } catch (err) {
-                    logWarn(
-                        CTX.PO_TOKEN,
-                        `Could not pin session egress proxy: ${err}`,
-                    );
-                }
-            }
-
-            worker.postMessage({ type: "initialise", config: workerConfig });
+            worker.postMessage({
+                type: "initialise",
+                config: await pinWorkerConfig(config, (proxy) => {
+                    egressProxyUrl = proxy;
+                }),
+            });
         }
 
         // Only fatal setup/initialise errors (no requestId) tear down the
@@ -179,9 +225,7 @@ export const poTokenGenerate = (
         // whole session here.
         if (parsedMessage.type === "error" && !parsedMessage.requestId) {
             logError(CTX.PO_TOKEN, `Worker error: ${parsedMessage.error}`);
-            settled = true;
-            worker.terminate();
-            reject(parsedMessage.error);
+            fail(parsedMessage.error);
         }
 
         if (parsedMessage.type === "initialised") {
@@ -194,8 +238,14 @@ export const poTokenGenerate = (
                     generate_session_locally: true,
                     cookie: config.youtube_session.cookies || undefined,
                     player_id: config.youtube_session.player_id,
+                    // Same UA/locale the worker attested under, and the shared
+                    // cache so the player JS is not re-fetched per regen.
+                    user_agent: USER_AGENT,
+                    location: config.youtube_session.gl || undefined,
+                    lang: config.youtube_session.hl || undefined,
+                    cache: options.cache,
                 });
-                const minter = createMinter(worker);
+                const minter = createMinter(worker, metrics);
                 await checkToken({
                     instantiatedInnertubeClient,
                     config,
@@ -204,15 +254,11 @@ export const poTokenGenerate = (
                 });
                 logInfo(CTX.PO_TOKEN, "Successfully generated");
                 metrics?.poTokenGenerationSuccess.inc();
-                const numberToKill = workers.length - 1;
-                for (let i = 0; i < numberToKill; i++) {
-                    const workerToKill = workers.shift();
-                    workerToKill?.terminate();
-                }
-                settled = true;
-                return resolve({
+                succeed({
                     innertubeClient: instantiatedInnertubeClient,
                     tokenMinter: minter,
+                    worker,
+                    egressProxyUrl,
                     sessionTtlSecs: parsedMessage.estimatedTtlSecs,
                 });
             } catch (err) {
@@ -220,15 +266,44 @@ export const poTokenGenerate = (
                     CTX.PO_TOKEN,
                     `Failed to get valid token, will retry: ${err}`,
                 );
-                settled = true;
-                worker.terminate();
-                reject(err);
+                fail(err);
             }
         }
     });
 
     return promise;
 };
+
+/**
+ * Pin the worker's BotGuard attestation to the same egress proxy the request
+ * path will use, so the visitor_data / PO token are minted from the IP that
+ * later presents them. Only the failover proxy pool needs this; single-proxy
+ * and direct are already consistent and IPv6 rotation is per-request by
+ * design. Reports the chosen proxy through `onPinned`.
+ */
+async function pinWorkerConfig(
+    config: Config,
+    onPinned: (proxyUrl: string) => void,
+): Promise<Config> {
+    const pool = config.networking.proxy_pool;
+    if (!pool.enabled || pool.proxies.length === 0) return config;
+    try {
+        const sessionProxy = await getSessionEgressProxy(config);
+        if (!sessionProxy) return config;
+        onPinned(sessionProxy);
+        return {
+            ...config,
+            networking: {
+                ...config.networking,
+                proxy: sessionProxy,
+                proxy_pool: { ...pool, enabled: false },
+            },
+        };
+    } catch (err) {
+        logWarn(CTX.PO_TOKEN, `Could not pin session egress proxy: ${err}`);
+        return config;
+    }
+}
 
 async function checkToken({
     instantiatedInnertubeClient,
@@ -337,25 +412,5 @@ async function checkToken({
     } catch (err) {
         logWarn(CTX.PO_TOKEN, `Validation failed: ${err}`);
         throw err;
-    }
-}
-
-export function cleanupWorkers(): void {
-    if (workers.length === 0) {
-        return;
-    }
-    logInfo(
-        CTX.PO_TOKEN,
-        `Cleaning up ${workers.length} worker(s) for shutdown`,
-    );
-    while (workers.length > 0) {
-        const worker = workers.shift();
-        if (worker) {
-            try {
-                worker.terminate();
-            } catch (err) {
-                logError(CTX.PO_TOKEN, "Failed to terminate worker", err);
-            }
-        }
     }
 }

@@ -44,4 +44,10 @@ Deno.test({
     },
     // need to disable leaks test for now because we are leaking resources when using HTTPClient using a proxy
     sanitizeResources: false,
+    // main.ts starts the first poTokenGenerate() call (with its
+    // GENERATION_TIMEOUT_MS setTimeout) at module import time, before this
+    // test registers. The timer is cleared once the worker succeeds, which
+    // happens inside this test's run — a legitimate cross-boundary op the
+    // sanitizer otherwise flags as a leak.
+    sanitizeOps: false,
 });

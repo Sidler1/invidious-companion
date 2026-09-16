@@ -94,8 +94,10 @@ if (isWorker) {
         }
         const message = parsed.data;
         if (message.type === "initialise") {
-            const fetchImpl: typeof fetch = getFetchClient(message.config);
             try {
+                const fetchImpl: typeof fetch = getFetchClient(
+                    message.config,
+                );
                 const {
                     sessionPoToken,
                     visitorData,
@@ -117,7 +119,7 @@ if (isWorker) {
                     estimatedTtlSecs,
                 });
             } catch (err) {
-                postMessage({ type: "error", error: err });
+                postMessage({ type: "error", error: String(err) });
             }
         }
         // this is called every time a video needs a content token
