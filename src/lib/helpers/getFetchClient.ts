@@ -455,6 +455,9 @@ export const getFetchClient = (config: Config, metrics?: Metrics): FetchFn => {
                             headers: init?.headers,
                             method: init?.method,
                             body: init?.body,
+                            redirect: init?.redirect,
+                            signal: init?.signal,
+                            streaming: init?.streaming,
                         },
                         proxyGates.get(proxyUrl),
                     );
