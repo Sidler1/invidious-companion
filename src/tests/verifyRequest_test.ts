@@ -78,3 +78,15 @@ Deno.test("verifyRequest accepts base64url tokens containing - and _", async () 
     assert(check.includes("-") || check.includes("_"));
     assertEquals(await verifyRequest(check, VIDEO_ID, config), true);
 });
+
+Deno.test("verifyRequest accepts an unpadded base64url token", async () => {
+    const check = await makeCheck(VIDEO_ID, config);
+    const unpadded = check.replace(/=+$/, "");
+    assertEquals(await verifyRequest(unpadded, VIDEO_ID, config), true);
+});
+
+Deno.test("verifyRequest accepts a standard (non-url-safe) base64 token", async () => {
+    const check = await makeCheck(VIDEO_ID, config);
+    const standard = check.replace(/-/g, "+").replace(/_/g, "/");
+    assertEquals(await verifyRequest(standard, VIDEO_ID, config), true);
+});

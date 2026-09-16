@@ -7,8 +7,7 @@ import { decryptGcm, encryptGcm } from "./crypto.ts";
  * Encrypt query parameters using AES-256-GCM.
  *
  * Ciphertext format: base64( IV[12] || ciphertext || authTag[16] ), see
- * crypto.ts. Returns "" on failure (Task 5 of the security plan changes
- * this to throw).
+ * crypto.ts. Returns "" on failure.
  */
 export const encryptQuery = async (
     queryParams: string,
