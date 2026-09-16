@@ -89,7 +89,10 @@ writes in a set and await them before `closeKv()`.
 `potoken.ts:62-69`, `routes/readiness.ts:35-39`: mint timeouts and errors have
 no counter; `/readyz` reports ready on `!!tokenMinter` alone.
 **Required:** `mintTimeouts` and `mintFailures` counters; readiness reflects a
-successful mint within the last `session_lifetime_hours`.
+successful mint within the last `session_lifetime_hours`. The freshness window
+is `session_lifetime_hours` plus a fixed 15-minute grace margin covering the
+cron period and the generation timeout, so an idle instance does not flap
+between regenerations.
 
 ---
 
