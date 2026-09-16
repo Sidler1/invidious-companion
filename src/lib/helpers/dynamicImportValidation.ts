@@ -63,10 +63,30 @@ export function resolveAndValidateImportLocation(
     // Reject path traversal BEFORE basename-based acceptance, for the same
     // reason. At most one leading "../lib/" prefix is tolerated; any ".."
     // beyond that (including "../lib/../../etc/passwd") is rejected.
+    // Also check the percent-decoded form to catch encoded traversal like %2e%2e/..
+    let decodedLocation = location;
+    try {
+        decodedLocation = decodeURIComponent(location);
+    } catch {
+        // Malformed percent-encoding (e.g., %zz) is a rejection.
+        throw new Error(
+            `${envVarName} rejected: suspicious path traversal detected. ` +
+                `Got: "${envLocation}". Only internal module paths are permitted.`,
+        );
+    }
+
     const afterAllowedPrefix = location.startsWith(TRAVERSAL_ALLOWED_PREFIX)
         ? location.slice(TRAVERSAL_ALLOWED_PREFIX.length)
         : location;
-    if (afterAllowedPrefix.includes("..")) {
+    const decodedAfterAllowedPrefix =
+        decodedLocation.startsWith(TRAVERSAL_ALLOWED_PREFIX)
+            ? decodedLocation.slice(TRAVERSAL_ALLOWED_PREFIX.length)
+            : decodedLocation;
+
+    if (
+        afterAllowedPrefix.includes("..") ||
+        decodedAfterAllowedPrefix.includes("..")
+    ) {
         throw new Error(
             `${envVarName} rejected: suspicious path traversal detected. ` +
                 `Got: "${envLocation}". Only internal module paths are permitted.`,

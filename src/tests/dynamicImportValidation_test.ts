@@ -156,4 +156,78 @@ Deno.test("Dynamic import validation", async (t) => {
             }
         },
     );
+
+    await t.step(
+        "rejects percent-encoded traversal (%2e%2e/%2e%2e/tmp/getFetchClient.ts)",
+        () => {
+            Deno.env.set(
+                "GET_FETCH_CLIENT_LOCATION",
+                "%2e%2e/%2e%2e/tmp/getFetchClient.ts",
+            );
+            Deno.env.delete("DENO_COMPILED");
+            try {
+                assertThrows(
+                    () => resolveAndValidateFetchClientLocation(),
+                    Error,
+                    "suspicious path traversal",
+                );
+            } finally {
+                cleanup();
+            }
+        },
+    );
+
+    await t.step(
+        "rejects uppercase percent-encoded traversal (%2E%2E/getFetchClient.ts)",
+        () => {
+            Deno.env.set(
+                "GET_FETCH_CLIENT_LOCATION",
+                "%2E%2E/getFetchClient.ts",
+            );
+            Deno.env.delete("DENO_COMPILED");
+            try {
+                assertThrows(
+                    () => resolveAndValidateFetchClientLocation(),
+                    Error,
+                    "suspicious path traversal",
+                );
+            } finally {
+                cleanup();
+            }
+        },
+    );
+
+    await t.step(
+        "rejects malformed percent-encoding (%zz/getFetchClient.ts)",
+        () => {
+            Deno.env.set(
+                "GET_FETCH_CLIENT_LOCATION",
+                "%zz/getFetchClient.ts",
+            );
+            Deno.env.delete("DENO_COMPILED");
+            try {
+                assertThrows(
+                    () => resolveAndValidateFetchClientLocation(),
+                    Error,
+                    "suspicious path traversal",
+                );
+            } finally {
+                cleanup();
+            }
+        },
+    );
+
+    await t.step(
+        "accepts compiled path with percent-encoded space (file:///tmp/my%20dir/getFetchClient.ts)",
+        () => {
+            Deno.env.set(
+                "GET_FETCH_CLIENT_LOCATION",
+                "file:///tmp/my%20dir/getFetchClient.ts",
+            );
+            Deno.env.delete("DENO_COMPILED");
+            const result = resolveAndValidateFetchClientLocation();
+            assertEquals(result, "file:///tmp/my%20dir/getFetchClient.ts");
+            cleanup();
+        },
+    );
 });
