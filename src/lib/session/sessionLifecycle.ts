@@ -146,7 +146,18 @@ export class SessionLifecycle {
             let current: string | null = reason;
             while (current !== null) {
                 this.pendingTrigger = null;
-                await this.runGeneration(current);
+                try {
+                    await this.runGeneration(current);
+                } catch (err) {
+                    // A trigger that coalesced behind this generation still
+                    // deserves its own attempt (spec A5): only give up and
+                    // propagate the failure when nothing is queued behind it.
+                    if (this.pendingTrigger === null) throw err;
+                    logWarn(
+                        CTX.PO_TOKEN,
+                        `Session regeneration (${current}) failed, retrying for queued trigger (${this.pendingTrigger}): ${err}`,
+                    );
+                }
                 current = this.pendingTrigger;
             }
         } finally {

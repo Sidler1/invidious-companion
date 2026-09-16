@@ -4,7 +4,6 @@ import {
     registeredWorkerCount,
     registerWorker,
     releaseWorker,
-    terminateUnreferenced,
 } from "../lib/session/workerRegistry.ts";
 import { FakeWorker } from "./helpers/fakeWorker.ts";
 
@@ -12,21 +11,6 @@ Deno.test("workerRegistry", async (t) => {
     await t.step("cleanupWorkers does not throw with no workers", () => {
         cleanupWorkers();
         assertEquals(registeredWorkerCount(), 0);
-    });
-
-    await t.step("terminateUnreferenced keeps referenced workers alive", () => {
-        const a = new FakeWorker();
-        const b = new FakeWorker();
-        registerWorker(a);
-        registerWorker(b);
-
-        const terminated = terminateUnreferenced(new Set([a]));
-
-        assertEquals(terminated, 1);
-        assertEquals(a.terminated, false);
-        assertEquals(b.terminated, true);
-        assertEquals(registeredWorkerCount(), 1);
-        cleanupWorkers();
     });
 
     await t.step("releaseWorker terminates exactly that worker", () => {

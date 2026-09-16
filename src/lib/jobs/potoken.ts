@@ -195,79 +195,90 @@ export const poTokenGenerate = (
     let egressProxyUrl: string | null = config.networking.proxy ?? null;
 
     worker.addEventListener("message", async (event) => {
-        const parsed = OutputMessageSchema.safeParse(event.data);
-        if (!parsed.success) {
-            logError(
-                CTX.PO_TOKEN,
-                `Malformed message from worker: ${parsed.error}`,
-            );
-            fail(
-                new Error(
-                    `Malformed message from PO-token worker: ${parsed.error}`,
-                ),
-            );
-            return;
-        }
-        const parsedMessage = parsed.data;
-
-        if (parsedMessage.type === "ready") {
-            worker.postMessage({
-                type: "initialise",
-                config: await pinWorkerConfig(config, (proxy) => {
-                    egressProxyUrl = proxy;
-                }),
-            });
-        }
-
-        // Only fatal setup/initialise errors (no requestId) tear down the
-        // worker. Per-request mint errors carry a requestId and are handled by
-        // the dedicated listener in createMinter, so they must not kill the
-        // whole session here.
-        if (parsedMessage.type === "error" && !parsedMessage.requestId) {
-            logError(CTX.PO_TOKEN, `Worker error: ${parsedMessage.error}`);
-            fail(parsedMessage.error);
-        }
-
-        if (parsedMessage.type === "initialised") {
-            try {
-                const instantiatedInnertubeClient = await Innertube.create({
-                    enable_session_cache: false,
-                    po_token: parsedMessage.sessionPoToken,
-                    visitor_data: parsedMessage.visitorData,
-                    fetch: getFetchClient(config),
-                    generate_session_locally: true,
-                    cookie: config.youtube_session.cookies || undefined,
-                    player_id: config.youtube_session.player_id,
-                    // Same UA/locale the worker attested under, and the shared
-                    // cache so the player JS is not re-fetched per regen.
-                    user_agent: USER_AGENT,
-                    location: config.youtube_session.gl || undefined,
-                    lang: config.youtube_session.hl || undefined,
-                    cache: options.cache,
-                });
-                const minter = createMinter(worker, metrics);
-                await checkToken({
-                    instantiatedInnertubeClient,
-                    config,
-                    integrityTokenBasedMinter: minter,
-                    metrics,
-                });
-                logInfo(CTX.PO_TOKEN, "Successfully generated");
-                metrics?.poTokenGenerationSuccess.inc();
-                succeed({
-                    innertubeClient: instantiatedInnertubeClient,
-                    tokenMinter: minter,
-                    worker,
-                    egressProxyUrl,
-                    sessionTtlSecs: parsedMessage.estimatedTtlSecs,
-                });
-            } catch (err) {
-                logWarn(
+        try {
+            const parsed = OutputMessageSchema.safeParse(event.data);
+            if (!parsed.success) {
+                logError(
                     CTX.PO_TOKEN,
-                    `Failed to get valid token, will retry: ${err}`,
+                    `Malformed message from worker: ${parsed.error}`,
                 );
-                fail(err);
+                fail(
+                    new Error(
+                        `Malformed message from PO-token worker: ${parsed.error}`,
+                    ),
+                );
+                return;
             }
+            const parsedMessage = parsed.data;
+
+            if (parsedMessage.type === "ready") {
+                worker.postMessage({
+                    type: "initialise",
+                    config: await pinWorkerConfig(config, (proxy) => {
+                        egressProxyUrl = proxy;
+                    }),
+                });
+            }
+
+            // Only fatal setup/initialise errors (no requestId) tear down the
+            // worker. Per-request mint errors carry a requestId and are handled
+            // by the dedicated listener in createMinter, so they must not kill
+            // the whole session here.
+            if (parsedMessage.type === "error" && !parsedMessage.requestId) {
+                logError(CTX.PO_TOKEN, `Worker error: ${parsedMessage.error}`);
+                fail(parsedMessage.error);
+            }
+
+            if (parsedMessage.type === "initialised") {
+                try {
+                    const instantiatedInnertubeClient = await Innertube
+                        .create({
+                            enable_session_cache: false,
+                            po_token: parsedMessage.sessionPoToken,
+                            visitor_data: parsedMessage.visitorData,
+                            fetch: getFetchClient(config),
+                            generate_session_locally: true,
+                            cookie: config.youtube_session.cookies ||
+                                undefined,
+                            player_id: config.youtube_session.player_id,
+                            // Same UA/locale the worker attested under, and the
+                            // shared cache so the player JS is not re-fetched
+                            // per regen.
+                            user_agent: USER_AGENT,
+                            location: config.youtube_session.gl || undefined,
+                            lang: config.youtube_session.hl || undefined,
+                            cache: options.cache,
+                        });
+                    const minter = createMinter(worker, metrics);
+                    await checkToken({
+                        instantiatedInnertubeClient,
+                        config,
+                        integrityTokenBasedMinter: minter,
+                        metrics,
+                    });
+                    logInfo(CTX.PO_TOKEN, "Successfully generated");
+                    metrics?.poTokenGenerationSuccess.inc();
+                    succeed({
+                        innertubeClient: instantiatedInnertubeClient,
+                        tokenMinter: minter,
+                        worker,
+                        egressProxyUrl,
+                        sessionTtlSecs: parsedMessage.estimatedTtlSecs,
+                    });
+                } catch (err) {
+                    logWarn(
+                        CTX.PO_TOKEN,
+                        `Failed to get valid token, will retry: ${err}`,
+                    );
+                    fail(err);
+                }
+            }
+        } catch (err) {
+            // Anything thrown in this listener outside the inner try (schema
+            // parsing, pinWorkerConfig, postMessage) would otherwise become an
+            // unhandled rejection instead of settling the generation promise.
+            // fail() is idempotent, so this is a no-op if already settled.
+            fail(err);
         }
     });
 

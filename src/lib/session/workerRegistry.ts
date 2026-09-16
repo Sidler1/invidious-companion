@@ -29,23 +29,6 @@ export function releaseWorker(worker: TerminableWorker): void {
     safeTerminate(worker);
 }
 
-/**
- * Terminate every registered worker that is not in `keep`. Called after a
- * session is adopted with the set of workers still referenced by the current
- * session and any cached per-proxy sessions.
- */
-export function terminateUnreferenced(
-    keep: ReadonlySet<TerminableWorker>,
-): number {
-    let terminated = 0;
-    for (const worker of registered) {
-        if (keep.has(worker)) continue;
-        releaseWorker(worker);
-        terminated++;
-    }
-    return terminated;
-}
-
 export function registeredWorkerCount(): number {
     return registered.size;
 }

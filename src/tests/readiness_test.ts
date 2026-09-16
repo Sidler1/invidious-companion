@@ -81,10 +81,11 @@ Deno.test("Readiness endpoint - ready when the minter minted within the session 
     assertEquals(body.checks.token_mint_fresh, true);
 });
 
-Deno.test("Readiness endpoint - not ready when the last mint is older than the session lifetime", async () => {
+Deno.test("Readiness endpoint - not ready when the last mint is older than the session lifetime plus the grace margin", async () => {
     const app = appWithSession({
         minter: true,
-        lastMintOkMs: Date.now() - 7 * HOUR_MS,
+        // lifetime 6h + 15min grace: go well past both.
+        lastMintOkMs: Date.now() - (6 * HOUR_MS + 30 * 60 * 1000),
     });
 
     const res = await app.request("/readyz");
@@ -92,6 +93,20 @@ Deno.test("Readiness endpoint - not ready when the last mint is older than the s
     assertEquals(res.status, 503);
     const body = await res.json();
     assertEquals(body.checks.token_mint_fresh, false);
+});
+
+Deno.test("Readiness endpoint - ready when the mint is older than the lifetime but within the grace margin", async () => {
+    const app = appWithSession({
+        minter: true,
+        // lifetime 6h + 5min: past the lifetime, but inside the 15min grace.
+        lastMintOkMs: Date.now() - (6 * HOUR_MS + 5 * 60 * 1000),
+    });
+
+    const res = await app.request("/readyz");
+
+    assertEquals(res.status, 200);
+    const body = await res.json();
+    assertEquals(body.checks.token_mint_fresh, true);
 });
 
 Deno.test("Readiness endpoint - not ready without a token minter when PO tokens are enabled", async () => {

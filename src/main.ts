@@ -440,7 +440,6 @@ if (import.meta.main) {
             // Ignore — we exit regardless below.
         }
 
-        clearTimeout(forceExit);
         // Workers are torn down only after in-flight requests drained, so a
         // request that reaches tokenMinter() during the drain still gets a
         // token instead of waiting out the mint timeout.
@@ -451,6 +450,10 @@ if (import.meta.main) {
         await closeKv().catch((err) =>
             logWarn(CTX.SHUTDOWN, `Failed to close KV cache: ${err}`)
         );
+        // Clear the hard cap only once every drain/cleanup step above has
+        // actually finished, so a wedged write or a hung KV close still hits
+        // the 10s force-exit instead of hanging forever.
+        clearTimeout(forceExit);
         logInfo(CTX.SHUTDOWN, "Graceful shutdown completed");
         Deno.exit(0);
     };

@@ -32,6 +32,10 @@ export class FakeWorker {
         this.target.dispatchEvent(new ErrorEvent("error", { message }));
     }
 
+    emitMessageError(): void {
+        this.target.dispatchEvent(new MessageEvent("messageerror"));
+    }
+
     addEventListener(
         type: "message" | "messageerror",
         listener: (event: MessageEvent) => void,

@@ -70,6 +70,23 @@ Deno.test("poTokenGenerate", async (t) => {
         },
     );
 
+    await t.step(
+        "rejects and terminates the worker on a messageerror event",
+        async () => {
+            const worker = new FakeWorker();
+            const pending = poTokenGenerate(config, undefined, {
+                createWorker: () => worker,
+                timeoutMs: 5_000,
+            });
+
+            worker.emitMessageError();
+
+            await assertRejects(() => pending, Error, "unserialisable");
+            assertEquals(worker.terminated, true);
+            assertEquals(registeredWorkerCount(), 0);
+        },
+    );
+
     await t.step("rejects when generation exceeds the timeout", async () => {
         const worker = new FakeWorker();
         const pending = poTokenGenerate(config, undefined, {

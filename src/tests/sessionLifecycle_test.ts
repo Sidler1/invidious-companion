@@ -212,6 +212,53 @@ Deno.test("SessionLifecycle", async (t) => {
     );
 
     await t.step(
+        "regenerate retries a trigger coalesced behind a failing generation instead of dropping it",
+        async () => {
+            let rejectFirst!: (err: Error) => void;
+            let resolveSecond!: (s: GeneratedSession) => void;
+            let callCount = 0;
+            const h = harness(
+                makeConfig(),
+                () => {
+                    callCount++;
+                    if (callCount === 1) {
+                        return new Promise<GeneratedSession>(
+                            (_resolve, reject) => {
+                                rejectFirst = reject;
+                            },
+                        );
+                    }
+                    return new Promise<GeneratedSession>((resolve) => {
+                        resolveSecond = resolve;
+                    });
+                },
+            );
+
+            const first = h.lifecycle.regenerate("scheduled");
+            await h.lifecycle.regenerate("block-detected");
+            assertEquals(h.calls, ["scheduled"]);
+
+            rejectFirst(new Error("attestation failed"));
+            await delay(0);
+            // The coalesced trigger ran instead of being dropped with the
+            // failed generation.
+            assertEquals(h.calls, ["scheduled", "block-detected"]);
+            assertEquals(
+                await counterValue(h.metrics.potokenGenerationFailure),
+                1,
+            );
+            assertEquals(h.lifecycle.regenerationInFlight, true);
+
+            resolveSecond(makeSession());
+            // Nothing was pending after the retry succeeded, so the original
+            // regenerate("scheduled") call resolves rather than rejecting.
+            await first;
+            assertEquals(h.lifecycle.regenerationInFlight, false);
+            cleanupWorkers();
+        },
+    );
+
+    await t.step(
         "regenerate rethrows a generation failure and counts it",
         async () => {
             const h = harness(
