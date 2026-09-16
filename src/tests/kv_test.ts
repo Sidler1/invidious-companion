@@ -18,6 +18,6 @@ Deno.test("getKv opens the store under the configured cache directory", async ()
     );
     assert(stat.isFile, "KV store file should be created in the cache dir");
 
-    kv.close();
-    await Deno.remove(cacheDirectory, { recursive: true });
+    // The handle is memoized module-wide and shared with later tests in the
+    // same process, so it is intentionally neither closed nor removed here.
 });
