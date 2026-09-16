@@ -18,6 +18,7 @@ import { awaitPendingWrites } from "./lib/helpers/pendingWrites.ts";
 import { Metrics } from "./lib/helpers/metrics.ts";
 import { jsInterpreter } from "./lib/helpers/jsInterpreter.ts";
 import { CTX, logError, logInfo, logWarn } from "./lib/helpers/log.ts";
+import { errorHandler } from "./routes/errorHandler.ts";
 
 const config = await parseConfig();
 
@@ -53,6 +54,11 @@ const companionApp = new Hono({
     getPath: (req) => new URL(req.url).pathname,
 }).basePath(config.server.base_path);
 const metrics = config.server.enable_metrics ? new Metrics() : undefined;
+
+// Unexpected errors must never reach Hono's default handler, which prints
+// the raw error (and with it any URL-embedded PO token) to the console.
+app.onError(errorHandler);
+companionApp.onError(errorHandler);
 
 let tokenMinter: TokenMinter | undefined;
 let innertubeClient: Innertube;

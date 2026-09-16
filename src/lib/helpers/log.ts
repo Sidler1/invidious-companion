@@ -16,6 +16,8 @@
  *   [ERROR] [CACHE] Decompression failed, deleting corrupted entry
  */
 
+import { redactString } from "./redactSensitive.ts";
+
 type LogLevel = "debug" | "info" | "warn" | "error";
 
 const LEVEL_PRIORITY: Record<LogLevel, number> = {
@@ -41,7 +43,7 @@ function shouldLog(level: LogLevel): boolean {
  */
 export function logInfo(context: string, message: string): void {
     if (!shouldLog("info")) return;
-    console.log(`[INFO]  [${context}] ${message}`);
+    console.log(`[INFO]  [${context}] ${redactString(message)}`);
 }
 
 /**
@@ -51,14 +53,26 @@ export function logInfo(context: string, message: string): void {
  */
 export function logWarn(context: string, message: string): void {
     if (!shouldLog("warn")) return;
-    console.warn(`[WARN]  [${context}] ${message}`);
+    console.warn(`[WARN]  [${context}] ${redactString(message)}`);
+}
+
+/**
+ * Render an unknown error as text (stack when available) so it can be
+ * redacted before it reaches the console. Deno embeds full request URLs
+ * (including `pot=`/`sig=` values) in fetch error messages.
+ */
+function describeError(err: unknown): string {
+    if (err instanceof Error) {
+        return err.stack ?? `${err.name}: ${err.message}`;
+    }
+    return String(err);
 }
 
 /**
  * Error-level log. For failures requiring investigation.
  * @param context - Short module/context tag
  * @param message - Human-readable message
- * @param err - Optional error object for stack trace
+ * @param err - Optional error object; rendered and redacted before printing
  */
 export function logError(
     context: string,
@@ -66,10 +80,11 @@ export function logError(
     err?: unknown,
 ): void {
     if (!shouldLog("error")) return;
+    const line = `[ERROR] [${context}] ${redactString(message)}`;
     if (err !== undefined) {
-        console.error(`[ERROR] [${context}] ${message}`, err);
+        console.error(line, redactString(describeError(err)));
     } else {
-        console.error(`[ERROR] [${context}] ${message}`);
+        console.error(line);
     }
 }
 
@@ -80,7 +95,7 @@ export function logError(
  */
 export function logDebug(context: string, message: string): void {
     if (!shouldLog("debug")) return;
-    console.log(`[DEBUG] [${context}] ${message}`);
+    console.log(`[DEBUG] [${context}] ${redactString(message)}`);
 }
 
 // Standardized context tags used across the codebase
