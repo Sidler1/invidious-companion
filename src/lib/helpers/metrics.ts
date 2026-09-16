@@ -136,6 +136,21 @@ export class Metrics {
         "Number of session regenerations triggered proactively by a detected YouTube block",
     );
 
+    public mintTimeouts = this.createCounter(
+        "mint_timeouts_total",
+        "Number of per-video content-token mints that hit the mint timeout",
+    );
+
+    public mintFailures = this.createCounter(
+        "mint_failures_total",
+        "Number of per-video content-token mints the worker reported as failed",
+    );
+
+    public sessionRegenDropped = this.createCounter(
+        "session_regen_dropped_total",
+        "Number of session regeneration triggers coalesced into an already in-flight regeneration",
+    );
+
     public requestLatency = this.createHistogram(
         "request_latency_seconds",
         "Request latency in seconds",

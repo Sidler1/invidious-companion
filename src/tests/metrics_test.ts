@@ -86,6 +86,9 @@ Deno.test("Metrics - registry contains all expected metrics", () => {
         "invidious_companion_proxy_blacklists_total",
         "invidious_companion_proxy_recoveries_total",
         "invidious_companion_request_latency_seconds",
+        "invidious_companion_mint_timeouts_total",
+        "invidious_companion_mint_failures_total",
+        "invidious_companion_session_regen_dropped_total",
     ];
 
     for (const expected of expectedNewMetrics) {
