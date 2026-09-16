@@ -14,6 +14,7 @@ import { existsSync } from "@std/fs/exists";
 
 import { parseConfig } from "./lib/helpers/config.ts";
 import { closeKv } from "./lib/helpers/kv.ts";
+import { awaitPendingWrites } from "./lib/helpers/pendingWrites.ts";
 import { Metrics } from "./lib/helpers/metrics.ts";
 import { jsInterpreter } from "./lib/helpers/jsInterpreter.ts";
 import { CTX, logError, logInfo, logWarn } from "./lib/helpers/log.ts";
@@ -417,9 +418,6 @@ if (import.meta.main) {
         // Stop accepting new connections; in-flight requests keep running.
         controller.abort();
 
-        // Cleanup PO token workers
-        cleanupWorkers();
-
         metrics?.gracefulShutdowns.inc();
 
         // Hard cap: if in-flight requests don't drain within 10s, force exit.
@@ -439,7 +437,13 @@ if (import.meta.main) {
         }
 
         clearTimeout(forceExit);
-        // Flush and close the on-disk KV cache once no request can touch it.
+        // Workers are torn down only after in-flight requests drained, so a
+        // request that reaches tokenMinter() during the drain still gets a
+        // token instead of waiting out the mint timeout.
+        cleanupWorkers();
+        // Let fire-and-forget cache writes land, then flush and close the
+        // on-disk KV cache once nothing can touch it.
+        await awaitPendingWrites();
         await closeKv().catch((err) =>
             logWarn(CTX.SHUTDOWN, `Failed to close KV cache: ${err}`)
         );

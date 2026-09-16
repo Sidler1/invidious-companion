@@ -5,6 +5,7 @@ import type { TokenMinter } from "../jobs/potoken.ts";
 import { Metrics } from "./metrics.ts";
 import { CTX, logError } from "./log.ts";
 import { resolveAndValidatePlayerReqLocation } from "./dynamicImportValidation.ts";
+import { trackPendingWrite } from "./pendingWrites.ts";
 
 const youtubePlayerReqLocation = resolveAndValidatePlayerReqLocation();
 const { youtubePlayerReq } = await import(youtubePlayerReqLocation);
@@ -190,7 +191,7 @@ export const youtubePlayerParsing = async ({
             metrics?.innertubeSuccessfulRequest.inc();
             if (cacheEnabled) {
                 const ttlMs = (config.cache.ttl_seconds || 3600) * 1000;
-                (async () => {
+                trackPendingWrite((async () => {
                     try {
                         await kv.set(
                             ["video_cache", videoId],
@@ -210,7 +211,7 @@ export const youtubePlayerParsing = async ({
                             err,
                         );
                     }
-                })();
+                })());
             }
         } else {
             metrics?.checkInnertubeResponse(videoData);
@@ -220,7 +221,7 @@ export const youtubePlayerParsing = async ({
             // genuine recovery (e.g. after a session regen) is picked up soon.
             const negativeTtl = config.cache.negative_ttl_seconds;
             if (cacheEnabled && negativeTtl > 0) {
-                (async () => {
+                trackPendingWrite((async () => {
                     try {
                         await kv.set(
                             ["video_cache", videoId],
@@ -238,7 +239,7 @@ export const youtubePlayerParsing = async ({
                             err,
                         );
                     }
-                })();
+                })());
             }
         }
 
