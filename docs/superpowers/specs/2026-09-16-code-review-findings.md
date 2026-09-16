@@ -114,7 +114,12 @@ client with the `Location` header stripped; on the pool path `redirect` is not
 forwarded at all (see B3) so redirects are followed implicitly.
 **Required:** follow up to 5 redirects manually in the video proxy (validate
 every redirect target host with the same anchored `googlevideo.com` regex);
-return 502 when exceeded.
+return 502 when exceeded. Redirect targets may also be `*.c.youtube.com`
+hosts, matching Invidious's `valid_googlevideo_redirect?`. An invalid
+redirect target (wrong host, non-https, or carrying userinfo/an explicit
+port) returns 502 `"Invalid redirect target."`, not 400 — the target came
+from an upstream response, not the client, so it's an upstream-error class
+matching Invidious's `"Invalid redirect from upstream."`.
 
 ### B3 — MEDIUM — Pool path drops `redirect` and `signal` from `init`
 `getFetchClient.ts:420-431` forwards only `headers`, `method`, `body`.
