@@ -109,7 +109,7 @@ Platform.shim.eval = jsInterpreter;
 // This dramatically speeds up Innertube creation and the 5min cron regeneration
 // (avoids re-downloading/deciphering player JS every time)
 const cache = config.cache.enabled
-    ? new UniversalCache(true, config.cache.directory)
+    ? new UniversalCache(true, `${config.cache.directory}/youtubei.js`)
     : undefined;
 
 import {
@@ -175,7 +175,7 @@ if (!innertubeClientOauthEnabled) {
             config.networking.proxy_pool.proxies.length > 0;
         const bootstrapAttempt = async () => {
             try {
-                return await poTokenGenerate(config, metrics);
+                return await poTokenGenerate(config, metrics, { cache });
             } catch (err) {
                 if (usePool) {
                     await rotateSessionEgressProxy(config).catch(() => {});
