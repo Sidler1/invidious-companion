@@ -1,5 +1,5 @@
 import { assert, assertEquals } from "./deps.ts";
-import { buildFetchSignal } from "../lib/helpers/getFetchClient.ts";
+import { buildFetchSignal } from "../lib/helpers/fetchShim.ts";
 
 Deno.test("buildFetchSignal", async (t) => {
     await t.step("returns null when streaming and no caller signal", () => {

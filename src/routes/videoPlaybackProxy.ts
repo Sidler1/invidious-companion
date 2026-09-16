@@ -3,7 +3,7 @@ import { HTTPException } from "hono/http-exception";
 import { USER_AGENT } from "bgutils";
 import { decryptQuery } from "../lib/helpers/encryptQuery.ts";
 import type { Config } from "../lib/helpers/config.ts";
-import type { FetchFn } from "../lib/helpers/getFetchClient.ts";
+import type { FetchFn } from "../lib/helpers/fetchShim.ts";
 import {
     isGooglevideoHost,
     isValidExpire,

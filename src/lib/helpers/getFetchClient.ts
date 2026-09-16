@@ -1,49 +1,24 @@
-import { retry, type RetryOptions } from "@std/async";
+import type { RetryOptions } from "@std/async";
 import type { Config } from "./config.ts";
 import type { Metrics } from "./metrics.ts";
 import { generateRandomIPv6 } from "./ipv6Rotation.ts";
 import { CTX, logInfo, logWarn } from "./log.ts";
 import { FetchGate } from "./fetchGate.ts";
 import { checkYouTubeBlock, maskProxyUrl } from "./youtubeBlockDetection.ts";
+import {
+    type FetchFn,
+    type FetchInitParameterWithClient,
+    type FetchInputParameter,
+    fetchShim as rawFetchShim,
+} from "./fetchShim.ts";
 
-export type FetchInputParameter = Parameters<typeof fetch>[0];
-/**
- * `client`: a pre-built Deno.HttpClient (proxy / local address binding).
- * `streaming`: set by callers that stream a large body (video proxy). When
- * true, fetchShim attaches NO timeout signal, because `AbortSignal.timeout`
- * covers the whole body read and would cut long transfers. A header-phase
- * timeout for streaming requests is a follow-up (not covered here).
- */
-export type FetchInitParameterWithClient = RequestInit & {
-    client?: Deno.HttpClient;
-    streaming?: boolean;
-};
-export type FetchReturn = ReturnType<typeof fetch>;
-export type FetchFn = (
-    input: FetchInputParameter,
-    init?: FetchInitParameterWithClient,
-) => FetchReturn;
-
-/**
- * Decide which AbortSignal a fetch gets.
- * - streaming: only the caller's signal (or none); never a timeout.
- * - otherwise: the timeout signal, combined with the caller's signal when one
- *   is given so neither is silently dropped.
- */
-export function buildFetchSignal(
-    timeoutMs: number | undefined,
-    callerSignal: AbortSignal | null | undefined,
-    streaming: boolean | undefined,
-): AbortSignal | null {
-    if (streaming || !timeoutMs) {
-        return callerSignal ?? null;
-    }
-    const timeoutSignal = AbortSignal.timeout(Number(timeoutMs));
-    if (!callerSignal) {
-        return timeoutSignal;
-    }
-    return AbortSignal.any([callerSignal, timeoutSignal]);
-}
+export type {
+    FetchFn,
+    FetchInitParameterWithClient,
+    FetchInputParameter,
+    FetchReturn,
+} from "./fetchShim.ts";
+export { buildFetchSignal } from "./fetchShim.ts";
 
 // Process-wide latch: if generating an IPv6 source address ever fails (host
 // has no IPv6 support), we disable rotation permanently rather than retrying
@@ -135,6 +110,24 @@ export async function rotateSessionEgressProxy(
 
 // Process-wide outbound rate limiter (built from config.networking.rate_limit).
 let fetchGate: FetchGate | undefined;
+
+// Adapter: keeps the module-level gate and the retry metric out of fetchShim.ts.
+function fetchShim(
+    config: Config,
+    retryOptions: RetryOptions,
+    input: FetchInputParameter,
+    init?: FetchInitParameterWithClient,
+    gate?: FetchGate,
+) {
+    return rawFetchShim(
+        config,
+        retryOptions,
+        input,
+        init,
+        gate ?? fetchGate,
+        () => metricsRef?.upstreamRetries.inc(),
+    );
+}
 
 export const getFetchClient = (config: Config, metrics?: Metrics): FetchFn => {
     if (metrics) metricsRef = metrics;
@@ -643,33 +636,4 @@ function closeClientWhenDone(
     Object.defineProperty(wrapped, "url", { value: res.url });
     Object.defineProperty(wrapped, "redirected", { value: res.redirected });
     return wrapped;
-}
-
-function fetchShim(
-    config: Config,
-    retryOptions: RetryOptions,
-    input: FetchInputParameter,
-    init?: FetchInitParameterWithClient,
-    // Per-proxy rate gate. When provided (proxy-pool path) it overrides the
-    // process-wide gate so each egress IP is throttled independently.
-    gate?: FetchGate,
-): FetchReturn {
-    const fetchTimeout = config.networking.fetch?.timeout_ms;
-    const fetchRetry = config.networking.fetch?.retry?.enabled;
-    const activeGate = gate ?? fetchGate;
-    // `streaming` is our own flag, never handed to the native fetch.
-    const { streaming, signal: callerSignal, ...nativeInit } = init ?? {};
-    let attempt = 0;
-    const callFetch = () => {
-        // Every invocation after the first is a retry.
-        if (attempt++ > 0) metricsRef?.upstreamRetries.inc();
-        const doFetch = () =>
-            fetch(input, {
-                ...nativeInit,
-                // A fresh timeout per attempt, so retries get the full budget.
-                signal: buildFetchSignal(fetchTimeout, callerSignal, streaming),
-            });
-        return activeGate ? activeGate.run(doFetch) : doFetch();
-    };
-    return fetchRetry ? retry(callFetch, retryOptions) : callFetch();
 }
