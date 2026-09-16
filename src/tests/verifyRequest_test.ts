@@ -1,0 +1,80 @@
+import { assert, assertEquals } from "./deps.ts";
+import { verifyRequest } from "../lib/helpers/verifyRequest.ts";
+import { encryptGcm } from "../lib/helpers/crypto.ts";
+import { encodeBase64 } from "@std/encoding/base64";
+import { makeTestConfig } from "./helpers/testConfig.ts";
+import { makeCheck } from "./helpers/check.ts";
+
+const config = makeTestConfig();
+const VIDEO_ID = "jNQXAC9IVRw";
+const nowSeconds = () => Math.round(Date.now() / 1000);
+
+Deno.test("verifyRequest accepts a fresh check for the right video", async () => {
+    const check = await makeCheck(VIDEO_ID, config);
+    assertEquals(await verifyRequest(check, VIDEO_ID, config), true);
+});
+
+Deno.test("verifyRequest rejects a check for a different video", async () => {
+    const check = await makeCheck(VIDEO_ID, config);
+    assertEquals(await verifyRequest(check, "dQw4w9WgXcQ", config), false);
+});
+
+Deno.test("verifyRequest rejects a check older than six hours", async () => {
+    const check = await makeCheck(
+        VIDEO_ID,
+        config,
+        nowSeconds() - 6 * 60 * 60 - 60,
+    );
+    assertEquals(await verifyRequest(check, VIDEO_ID, config), false);
+});
+
+Deno.test("verifyRequest accepts a check five hours old", async () => {
+    const check = await makeCheck(VIDEO_ID, config, nowSeconds() - 5 * 60 * 60);
+    assertEquals(await verifyRequest(check, VIDEO_ID, config), true);
+});
+
+Deno.test("verifyRequest rejects a check more than five minutes in the future", async () => {
+    const check = await makeCheck(VIDEO_ID, config, nowSeconds() + 10 * 60);
+    assertEquals(await verifyRequest(check, VIDEO_ID, config), false);
+});
+
+Deno.test("verifyRequest tolerates two minutes of clock skew", async () => {
+    const check = await makeCheck(VIDEO_ID, config, nowSeconds() + 2 * 60);
+    assertEquals(await verifyRequest(check, VIDEO_ID, config), true);
+});
+
+Deno.test("verifyRequest rejects a tampered token", async () => {
+    const check = await makeCheck(VIDEO_ID, config);
+    const flipped = check.slice(0, -2) + (check.at(-2) === "A" ? "B" : "A") +
+        check.slice(-1);
+    assertEquals(await verifyRequest(flipped, VIDEO_ID, config), false);
+});
+
+Deno.test("verifyRequest rejects a non-integer timestamp", async () => {
+    const bytes = await encryptGcm(`123abc|${VIDEO_ID}`, config);
+    const check = encodeBase64(bytes).replace(/\+/g, "-").replace(/\//g, "_");
+    assertEquals(await verifyRequest(check, VIDEO_ID, config), false);
+});
+
+Deno.test("verifyRequest rejects a token with no separator", async () => {
+    const bytes = await encryptGcm(`${nowSeconds()}${VIDEO_ID}`, config);
+    const check = encodeBase64(bytes).replace(/\+/g, "-").replace(/\//g, "_");
+    assertEquals(await verifyRequest(check, VIDEO_ID, config), false);
+});
+
+Deno.test("verifyRequest rejects garbage input", async () => {
+    assertEquals(await verifyRequest("", VIDEO_ID, config), false);
+    assertEquals(await verifyRequest("%%%", VIDEO_ID, config), false);
+});
+
+Deno.test("verifyRequest accepts base64url tokens containing - and _", async () => {
+    // Random IVs mean a token with URL-safe substitutions shows up within
+    // a handful of attempts; loop until one does.
+    let check = "";
+    for (let i = 0; i < 200; i++) {
+        check = await makeCheck(VIDEO_ID, config);
+        if (check.includes("-") || check.includes("_")) break;
+    }
+    assert(check.includes("-") || check.includes("_"));
+    assertEquals(await verifyRequest(check, VIDEO_ID, config), true);
+});

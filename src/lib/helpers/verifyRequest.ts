@@ -1,85 +1,62 @@
 import { decodeBase64 } from "@std/encoding/base64";
 import type { Config } from "./config.ts";
+import { decryptGcm } from "./crypto.ts";
 
 /**
- * Verify a request check parameter using AES-256-GCM decryption.
+ * Verify the `check` query parameter Invidious attaches to companion
+ * requests. The token is base64url( IV[12] || ciphertext || authTag[16] )
+ * of "<unix seconds>|<videoId>" (see crypto.ts for the key derivation).
  *
- * Migrated from AES-128-ECB which provided no semantic security.
- * The check parameter contains: base64( IV[12] || authTag[16] || encrypted("timestamp|videoId") )
- *
- * Also fixed: the old code only checked if the timestamp was NOT too far in the future,
- * but never checked if it was too old (no replay attack protection). Now enforces
- * a 6-hour maximum age and a 5-minute future tolerance.
+ * Replay protection: tokens older than MAX_CHECK_AGE_SECONDS or more than
+ * MAX_CLOCK_SKEW_SECONDS in the future are rejected. Invidious signs once
+ * per page render, so the 6 h window must not shrink without changing
+ * Invidious in lockstep.
  */
+const MAX_CHECK_AGE_SECONDS = 6 * 60 * 60;
+const MAX_CLOCK_SKEW_SECONDS = 5 * 60;
+
+function base64UrlToStandard(value: string): string {
+    const standard = value.replace(/-/g, "+").replace(/_/g, "/");
+    const padding = (4 - (standard.length % 4)) % 4;
+    return standard + "=".repeat(padding);
+}
+
 export const verifyRequest = async (
     stringToCheck: string,
     videoId: string,
     config: Config,
 ): Promise<boolean> => {
+    let decryptedData: string;
     try {
-        const key = await importKeyForVerify(config.server.secret_key);
-        const combined = decodeBase64(
-            stringToCheck.replace(/-/g, "+").replace(/_/g, "/"),
+        decryptedData = await decryptGcm(
+            decodeBase64(base64UrlToStandard(stringToCheck)),
+            config,
         );
+    } catch {
+        return false;
+    }
 
-        // Extract IV (first 12 bytes) and ciphertext (rest, includes auth tag)
-        const iv = combined.slice(0, 12);
-        const ciphertext = combined.slice(12);
+    const separator = decryptedData.indexOf("|");
+    if (separator === -1) {
+        return false;
+    }
+    const parsedTimestamp = Number(decryptedData.slice(0, separator));
+    const parsedVideoId = decryptedData.slice(separator + 1);
 
-        const decrypted = await crypto.subtle.decrypt(
-            { name: "AES-GCM", iv },
-            key,
-            ciphertext,
-        );
+    if (parsedVideoId !== videoId) {
+        return false;
+    }
+    // Number("123abc") is NaN; parseInt would have accepted it as 123.
+    if (!Number.isInteger(parsedTimestamp)) {
+        return false;
+    }
 
-        const decryptedData = new TextDecoder().decode(decrypted);
-        const [parsedTimestamp, parsedVideoId] = decryptedData.split("|");
-        const parsedTimestampInt = parseInt(parsedTimestamp);
-        const timestampNow = Math.round(Date.now() / 1000);
-
-        if (parsedVideoId !== videoId) {
-            return false;
-        }
-
-        // A non-numeric timestamp would make both window comparisons below
-        // evaluate to false (NaN comparisons), silently bypassing them.
-        if (!Number.isFinite(parsedTimestampInt)) {
-            return false;
-        }
-
-        // Reject timestamps older than 6 hours (replay attack protection)
-        if (timestampNow - parsedTimestampInt > 6 * 60 * 60) {
-            return false;
-        }
-
-        // Reject timestamps more than 5 minutes in the future (clock skew tolerance)
-        if (parsedTimestampInt - timestampNow > 5 * 60) {
-            return false;
-        }
-    } catch (_) {
+    const timestampNow = Math.round(Date.now() / 1000);
+    if (timestampNow - parsedTimestamp > MAX_CHECK_AGE_SECONDS) {
+        return false;
+    }
+    if (parsedTimestamp - timestampNow > MAX_CLOCK_SKEW_SECONDS) {
         return false;
     }
     return true;
 };
-
-let cachedKey: CryptoKey | null = null;
-let cachedKeySource = "";
-
-async function importKeyForVerify(secretKey: string): Promise<CryptoKey> {
-    if (cachedKey && cachedKeySource === secretKey) {
-        return cachedKey;
-    }
-    const keyMaterial = await crypto.subtle.digest(
-        "SHA-256",
-        new TextEncoder().encode(secretKey),
-    );
-    cachedKey = await crypto.subtle.importKey(
-        "raw",
-        keyMaterial,
-        { name: "AES-GCM" },
-        false,
-        ["encrypt", "decrypt"],
-    );
-    cachedKeySource = secretKey;
-    return cachedKey;
-}
