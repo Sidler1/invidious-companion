@@ -8,4 +8,6 @@ export type HonoVariables = {
     config: Config;
     tokenMinter: TokenMinter | undefined;
     metrics: Metrics | undefined;
+    /** Timestamp (ms) of the last successful content-token mint; 0 = never. */
+    lastMintOkMs: number | undefined;
 };

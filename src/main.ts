@@ -36,7 +36,6 @@ const {
     getFetchClient,
     setOnYouTubeBlock,
     setOnActiveProxyChange,
-    getSessionEgressProxy,
     rotateSessionEgressProxy,
 } = await import(
     getFetchClientLocation
@@ -113,107 +112,42 @@ const cache = config.cache.enabled
     ? new UniversalCache(true, config.cache.directory)
     : undefined;
 
-// Session lifecycle state. `sessionGeneratedAtMs` records the last successful
-// full session generation; the scheduled cron uses it to skip the expensive
-// BotGuard re-attestation (and visitor_data churn) while the session is still
-// within its configured lifetime. The guards keep scheduled, lifetime, and
-// block-triggered regenerations from overlapping or storming.
-let sessionGeneratedAtMs = 0;
-let sessionRegenInFlight = false;
-let lastBlockRegenMs = 0;
-const BLOCK_REGEN_COOLDOWN_MS = 60_000;
+import {
+    type GeneratedSession,
+    SessionLifecycle,
+} from "./lib/session/sessionLifecycle.ts";
 
-// YouTube's own estimated integrity-token TTL (seconds) for the current
-// session, reported by the PO-token worker. Undefined when there is no PO
-// token (OAuth / po_token disabled) or YouTube didn't return one.
-let sessionTtlSecs: number | undefined;
-
-// Effective session lifetime: the smaller of the operator's configured cap and
-// YouTube's estimated integrity-token TTL (when the worker reported one).
-// Honouring the server estimate means we refresh before the token actually
-// expires instead of trusting a fixed guess, while session_lifetime_hours
-// stays an upper bound on how stale a session may get.
-function effectiveSessionLifetimeMs(): number {
-    const configMs = config.jobs.youtube_session.session_lifetime_hours *
-        60 * 60 * 1000;
-    if (sessionTtlSecs && sessionTtlSecs > 0) {
-        return Math.min(configMs, sessionTtlSecs * 1000);
+// Produces a brand-new session for the lifecycle: a PO-token worker session
+// when the job is enabled, otherwise a plain Innertube client.
+const generateSession = async (): Promise<GeneratedSession> => {
+    if (innertubeClientJobPoTokenEnabled) {
+        return await poTokenGenerate(config, metrics, { cache });
     }
-    return configMs;
-}
+    const client = await Innertube.create({
+        enable_session_cache: false,
+        fetch: getFetchClient(config),
+        retrieve_player: innertubeClientFetchPlayer,
+        user_agent: USER_AGENT,
+        cookie: innertubeClientCookies || undefined,
+        player_id: config.youtube_session.player_id,
+        location: config.youtube_session.gl || undefined,
+        lang: config.youtube_session.hl || undefined,
+        cache, // reuse cache for speed
+    });
+    return {
+        innertubeClient: client,
+        tokenMinter: undefined,
+        worker: undefined,
+        egressProxyUrl: null,
+    };
+};
 
-// Flips true once the first valid session/PO token is in place. Until then the
-// startup bootstrap loop is the sole session generator; the block- and
-// proxy-switch-triggered regenerations stay disarmed so they can't spawn a
-// second generator that races the bootstrap.
-let initialSessionReady = false;
-
-// Per-proxy session cache, used only when proxy_pool.switch_proxy_on_limit is
-// on. Each egress proxy keeps its own session (Innertube client + minter, whose
-// visitor_data/PO token were minted from that proxy's IP), so a rate-limit hop
-// to a different proxy swaps in a matching, already-warm session instead of
-// presenting one IP's tokens from another IP.
-const perProxySessions = new Map<string, {
-    client: Innertube;
-    minter: TokenMinter | undefined;
-    builtAt: number;
-}>();
-const perProxySessionsEnabled = config.networking.proxy_pool.enabled &&
-    config.networking.proxy_pool.switch_proxy_on_limit;
-
-async function regenerateSession(reason: string): Promise<void> {
-    if (sessionRegenInFlight) return;
-    sessionRegenInFlight = true;
-    try {
-        let newClient: Innertube;
-        let newMinter: TokenMinter | undefined;
-        let newTtlSecs: number | undefined;
-        if (innertubeClientJobPoTokenEnabled) {
-            const result = await poTokenGenerate(config, metrics);
-            newClient = result.innertubeClient;
-            newMinter = result.tokenMinter;
-            newTtlSecs = result.sessionTtlSecs;
-        } else {
-            newClient = await Innertube.create({
-                enable_session_cache: false,
-                fetch: getFetchClient(config),
-                retrieve_player: innertubeClientFetchPlayer,
-                user_agent: USER_AGENT,
-                cookie: innertubeClientCookies || undefined,
-                player_id: config.youtube_session.player_id,
-                location: config.youtube_session.gl || undefined,
-                lang: config.youtube_session.hl || undefined,
-                cache, // reuse cache for speed
-            });
-            newMinter = undefined;
-        }
-        sharedState.set(newClient, newMinter);
-        sessionGeneratedAtMs = Date.now();
-        sessionTtlSecs = newTtlSecs;
-        initialSessionReady = true;
-
-        // Cache this session under the egress proxy it was minted through, so a
-        // later hop back to that proxy reuses it (see onActiveProxyChange).
-        if (perProxySessionsEnabled) {
-            const egress = await getSessionEgressProxy(config).catch(() =>
-                null
-            );
-            if (egress) {
-                perProxySessions.set(egress, {
-                    client: newClient,
-                    minter: newMinter,
-                    builtAt: Date.now(),
-                });
-            }
-        }
-        logInfo(CTX.PO_TOKEN, `Session regenerated (${reason})`);
-    } catch (err) {
-        metrics?.potokenGenerationFailure.inc();
-        throw err;
-    } finally {
-        sessionRegenInFlight = false;
-    }
-}
+const lifecycle = new SessionLifecycle({
+    config,
+    metrics,
+    generate: generateSession,
+    install: (client, minter) => sharedState.set(client, minter),
+});
 
 innertubeClient = await Innertube.create({
     enable_session_cache: false,
@@ -261,20 +195,18 @@ if (!innertubeClientOauthEnabled) {
                 15,
             )
             : 6;
-        retry(
-            bootstrapAttempt,
-            {
-                maxAttempts: bootstrapMaxAttempts,
-                minTimeout: 1_000,
-                maxTimeout: 10_000,
-                multiplier: 2,
-                jitter: 0.2,
-            },
-        ).then((result) => {
-            sharedState.set(result.innertubeClient, result.tokenMinter);
-            sessionGeneratedAtMs = Date.now();
-            sessionTtlSecs = result.sessionTtlSecs;
-            initialSessionReady = true;
+        lifecycle.bootstrap(() =>
+            retry(
+                bootstrapAttempt,
+                {
+                    maxAttempts: bootstrapMaxAttempts,
+                    minTimeout: 1_000,
+                    maxTimeout: 10_000,
+                    multiplier: 2,
+                    jitter: 0.2,
+                },
+            )
+        ).then(() => {
             tokenMinterReadyResolve?.();
         }).catch((err) => {
             logError(CTX.PO_TOKEN, "Failed to initialize", err);
@@ -300,64 +232,33 @@ if (!innertubeClientOauthEnabled) {
             tokenMinterReadyResolve?.();
         });
     } else {
-        // No PO token: the client created above is the session. Mark it so the
-        // lifetime check below doesn't immediately regenerate it.
-        sessionGeneratedAtMs = Date.now();
+        // No PO token: the client created above is the session. Adopt it so
+        // the lifetime check below doesn't immediately regenerate it.
+        lifecycle.adopt({
+            innertubeClient,
+            tokenMinter: undefined,
+            worker: undefined,
+            egressProxyUrl: null,
+        });
         tokenMinterReadyResolve?.();
     }
 
     // Proactively regenerate the session when a block is detected, instead of
-    // waiting for the next scheduled tick. Debounced so a burst of blocked
-    // requests can't trigger a regeneration storm.
+    // waiting for the next scheduled tick (debounced inside the lifecycle).
     setOnYouTubeBlock(() => {
-        // While the startup bootstrap is still searching for a valid token it
-        // is the sole generator; don't let a block detected during that search
-        // spawn a competing regeneration.
-        if (!initialSessionReady) return;
-        const now = Date.now();
-        if (now - lastBlockRegenMs < BLOCK_REGEN_COOLDOWN_MS) return;
-        lastBlockRegenMs = now;
-        metrics?.blockTriggeredRegens.inc();
-        logWarn(
-            CTX.PO_TOKEN,
-            "YouTube block detected — regenerating session proactively",
-        );
-        regenerateSession("block-detected").catch((err) =>
-            logError(
-                CTX.PO_TOKEN,
-                "Block-triggered session regeneration failed",
-                err,
-            )
-        );
+        lifecycle.onBlockDetected();
     });
 
     // When the proxy pool hops the active egress (rate-limit-driven, only with
     // switch_proxy_on_limit), swap in that proxy's session so its IP and tokens
     // stay consistent. Reuse a still-fresh cached session synchronously;
     // otherwise mint a new one in the background pinned to the new proxy.
-    if (perProxySessionsEnabled) {
+    if (
+        config.networking.proxy_pool.enabled &&
+        config.networking.proxy_pool.switch_proxy_on_limit
+    ) {
         setOnActiveProxyChange((proxyUrl: string) => {
-            // The bootstrap loop rotates the egress proxy itself while hunting
-            // for a token; ignore those hops until a session is established so
-            // we don't kick off a parallel regeneration mid-bootstrap.
-            if (!initialSessionReady) return;
-            const lifetimeMs = effectiveSessionLifetimeMs();
-            const cached = perProxySessions.get(proxyUrl);
-            if (cached && Date.now() - cached.builtAt < lifetimeMs) {
-                sharedState.set(cached.client, cached.minter);
-                return;
-            }
-            logInfo(
-                CTX.PROXY,
-                "Active egress proxy changed — minting session for new IP",
-            );
-            regenerateSession("proxy-switch").catch((err) =>
-                logError(
-                    CTX.PROXY,
-                    "Proxy-switch session regeneration failed",
-                    err,
-                )
-            );
+            lifecycle.switchToProxy(proxyUrl);
         });
     }
 
@@ -366,14 +267,23 @@ if (!innertubeClientOauthEnabled) {
         config.jobs.youtube_session.frequency,
         { backoffSchedule: [5_000, 15_000, 60_000, 180_000] },
         async () => {
+            lifecycle.evictExpiredProxySessions();
+            // The startup bootstrap (or a triggered regen) is the sole
+            // generator while it runs; never start a second one.
+            if (lifecycle.regenerationInFlight) {
+                logInfo(
+                    CTX.PO_TOKEN,
+                    "Generation in flight, skipping scheduled regeneration",
+                );
+                return;
+            }
             // Skip the expensive full regeneration while the current session is
             // still within its effective lifetime (the smaller of the configured
             // cap and YouTube's estimated token TTL). The alive worker keeps
             // minting per-video content tokens in the meantime; early token
             // expiry or a detected block forces a regen out of band.
-            const lifetimeMs = effectiveSessionLifetimeMs();
-            const age = Date.now() - sessionGeneratedAtMs;
-            if (sessionGeneratedAtMs > 0 && age < lifetimeMs) {
+            if (lifecycle.isSessionFresh()) {
+                const age = Date.now() - lifecycle.sessionGeneratedAtMs;
                 logInfo(
                     CTX.PO_TOKEN,
                     `Session still fresh (${
@@ -382,7 +292,7 @@ if (!innertubeClientOauthEnabled) {
                 );
                 return;
             }
-            await regenerateSession("scheduled");
+            await lifecycle.regenerate("scheduled");
         },
     );
 } else if (innertubeClientOauthEnabled) {
@@ -415,6 +325,7 @@ companionApp.use("*", async (c, next) => {
     c.set("tokenMinter", sharedState.getMinter());
     c.set("config", config);
     c.set("metrics", metrics);
+    c.set("lastMintOkMs", lifecycle.lastMintOkMs);
     await next();
 });
 companionRoutes(companionApp, config);
@@ -427,6 +338,7 @@ app.use("*", async (c, next) => {
     c.set("tokenMinter", sharedState.getMinter());
     c.set("config", config);
     c.set("metrics", metrics);
+    c.set("lastMintOkMs", lifecycle.lastMintOkMs);
     await next();
 });
 miscRoutes(app, config);
