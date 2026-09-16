@@ -190,6 +190,8 @@ export const getFetchClient = (config: Config, metrics?: Metrics): FetchFn => {
         // interval and share one in-flight run between concurrent requests,
         // otherwise every request that arrives after a blacklist expires
         // probes the same proxy in parallel (and pays the probe latency).
+        // Effect: after a 1-hour blacklist expires, recovery may be delayed
+        // by up to this interval.
         const REVALIDATE_MIN_INTERVAL_MS = 30_000;
         let revalidateInFlight: Promise<void> | null = null;
         let lastRevalidateAt = 0;
