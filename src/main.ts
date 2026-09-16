@@ -426,6 +426,10 @@ if (import.meta.main) {
                 CTX.SHUTDOWN,
                 "Graceful shutdown timeout (10s), forcing exit",
             );
+            // Terminate workers explicitly even on a hung drain; pending
+            // writes and the KV close are skipped on this path, matching
+            // pre-change behaviour.
+            cleanupWorkers();
             Deno.exit(0);
         }, 10000);
 
