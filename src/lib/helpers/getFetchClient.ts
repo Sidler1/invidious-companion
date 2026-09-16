@@ -629,6 +629,27 @@ function closeClientWhenDone(
 }
 
 /**
+ * Read up to 8 KiB from the start of a (cloned) body and look for known
+ * block phrases. Never called for binary content — see checkYouTubeBlock.
+ */
+async function bodyHasBlockSignal(response: Response): Promise<boolean> {
+    try {
+        const cloned = response.clone();
+        const reader = cloned.body?.getReader();
+        if (!reader) return false;
+        const { value } = await reader.read();
+        reader.releaseLock();
+        if (!value) return false;
+        const text = new TextDecoder().decode(value.slice(0, 8192))
+            .toLowerCase();
+        return YOUTUBE_BLOCK_SIGNALS.some((s) => text.includes(s));
+    } catch {
+        // Can't read body — treat as not blocked.
+        return false;
+    }
+}
+
+/**
  * Check if a YouTube response contains bot detection signals.
  *
  * IMPORTANT: Only checks API/HTML responses (JSON, HTML, text content types).
@@ -639,72 +660,29 @@ function closeClientWhenDone(
  * 2. Reading video response bodies would buffer entire videos into memory (OOM)
  * 3. Treating video CDN 403s as bot blocks would falsely blacklist proxies
  *
- * For 403/429 on API responses: checks the body for known block signals.
- * For 200 on API responses: checks for block messages in the JSON body
- * (e.g., "protect our community" in playabilityStatus).
+ * A block is ONLY reported when the body carries one of YOUTUBE_BLOCK_SIGNALS.
+ * A 403/429 with no such phrase (e.g. a CDN 403 served as text/plain, or a
+ * generic 429) is not a bot block: treating it as one blacklisted proxies
+ * and triggered session regenerations for ordinary CDN errors.
  *
- * Returns true if a bot block signal is detected, false otherwise.
+ * Checked statuses: 403, 429 and 200 (YouTube returns 200 OK with the block
+ * message inside playabilityStatus for Innertube calls).
  */
 async function checkYouTubeBlock(response: Response): Promise<boolean> {
-    // Only check text-based content types (API responses, HTML pages).
-    // Skip binary content (video streams, media files) entirely —
-    // a 403 on a video stream is NOT a bot block, it's a CDN error.
     const contentType = (response.headers.get("content-type") || "")
         .toLowerCase();
     const isTextContent = contentType.includes("json") ||
         contentType.includes("html") ||
         contentType.includes("text");
-
     if (!isTextContent) {
         return false;
     }
-
-    // 403/429 on API responses — almost always indicates a bot block
-    if (response.status === 403 || response.status === 429) {
-        try {
-            const cloned = response.clone();
-            const reader = cloned.body?.getReader();
-            if (reader) {
-                const { value } = await reader.read();
-                reader.releaseLock();
-                if (value) {
-                    const text = new TextDecoder().decode(value.slice(0, 8192))
-                        .toLowerCase();
-                    if (YOUTUBE_BLOCK_SIGNALS.some((s) => text.includes(s))) {
-                        return true;
-                    }
-                }
-            }
-        } catch {
-            // Can't read body — fall back to status-based detection
-        }
-        return true;
+    const inspectedStatus = response.status === 403 ||
+        response.status === 429 || response.status === 200;
+    if (!inspectedStatus) {
+        return false;
     }
-
-    // YouTube also returns 200 OK with block messages in JSON API responses
-    // (especially for Innertube API calls that return playabilityStatus errors).
-    // This is the case for the "This helps protect our community" message.
-    if (response.status === 200) {
-        try {
-            const cloned = response.clone();
-            const reader = cloned.body?.getReader();
-            if (reader) {
-                const { value } = await reader.read();
-                reader.releaseLock();
-                if (value) {
-                    const text = new TextDecoder().decode(value.slice(0, 8192))
-                        .toLowerCase();
-                    if (YOUTUBE_BLOCK_SIGNALS.some((s) => text.includes(s))) {
-                        return true;
-                    }
-                }
-            }
-        } catch {
-            // Can't read body — assume not blocked
-        }
-    }
-
-    return false;
+    return await bodyHasBlockSignal(response);
 }
 
 function fetchShim(
