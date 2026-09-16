@@ -34,7 +34,15 @@ Deno.test("Readiness endpoint - returns 200 when all dependencies present", asyn
 const HOUR_MS = 60 * 60 * 1000;
 
 function appWithSession(
-    { minter, lastMintOkMs }: { minter: boolean; lastMintOkMs: number },
+    {
+        minter,
+        lastMintOkMs,
+        sessionLifetimeHours = 6,
+    }: {
+        minter: boolean;
+        lastMintOkMs: number;
+        sessionLifetimeHours?: number;
+    },
 ) {
     const app = new Hono<{ Variables: HonoVariables }>();
     app.use("*", async (c, next) => {
@@ -45,7 +53,7 @@ function appWithSession(
                 jobs: {
                     youtube_session: {
                         po_token_enabled: true,
-                        session_lifetime_hours: 6,
+                        session_lifetime_hours: sessionLifetimeHours,
                     },
                 },
             } as never,
@@ -94,4 +102,19 @@ Deno.test("Readiness endpoint - not ready without a token minter when PO tokens 
     assertEquals(res.status, 503);
     const body = await res.json();
     assertEquals(body.checks.token_minter, false);
+});
+
+Deno.test("Readiness endpoint - ready with any mint age when session_lifetime_hours is 0 (no freshness window)", async () => {
+    const app = appWithSession({
+        minter: true,
+        lastMintOkMs: Date.now() - 100 * HOUR_MS,
+        sessionLifetimeHours: 0,
+    });
+
+    const res = await app.request("/readyz");
+
+    assertEquals(res.status, 200);
+    const body = await res.json();
+    assertEquals(body.checks.token_minter, true);
+    assertEquals(body.checks.token_mint_fresh, true);
 });
