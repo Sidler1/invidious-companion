@@ -102,6 +102,12 @@
 # # how much to back off after each retry (multiplier of initial_debounce)
 # debounce_multiplier = 0 # env variable: NETWORKING_FETCH_RETRY_DEBOUNCE_MULTIPLIER
  
+# [captions]
+# # Ability to disable captions in case you are getting blocked too
+# # aggressively by YouTube (caption fetches consume PO tokens).
+# # See https://github.com/iv-org/invidious-companion/pull/259
+# enabled = true # env variable: CAPTIONS_ENABLED
+ 
 # [jobs]
  
 # [jobs.youtube_session]

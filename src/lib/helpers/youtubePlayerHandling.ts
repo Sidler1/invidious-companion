@@ -10,15 +10,7 @@ const youtubePlayerReqLocation = resolveAndValidatePlayerReqLocation();
 const { youtubePlayerReq } = await import(youtubePlayerReqLocation);
 
 import type { Config } from "./config.ts";
-
-let kvInstance: Deno.Kv | null = null;
-
-async function getKv(): Promise<Deno.Kv> {
-    if (!kvInstance) {
-        kvInstance = await Deno.openKv();
-    }
-    return kvInstance;
-}
+import { getKv } from "./kv.ts";
 
 // Tracks in-progress upstream player fetches so concurrent requests for the
 // same videoId share a single YouTube round-trip instead of stampeding.
@@ -40,7 +32,7 @@ export const youtubePlayerParsing = async ({
     overrideCache?: boolean;
 }): Promise<object> => {
     const cacheEnabled = overrideCache ? false : config.cache.enabled;
-    const kv = await getKv();
+    const kv = await getKv(config);
 
     const cachedEntry = await kv.get(["video_cache", videoId]);
     const videoCached = cachedEntry.value as Uint8Array | null;

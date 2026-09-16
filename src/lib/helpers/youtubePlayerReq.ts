@@ -124,6 +124,13 @@ export const youtubePlayerReq = async (
                 if (youtubePlayerResponse.data.streamingData) {
                     youtubePlayerResponse.data.streamingData.adaptiveFormats =
                         fallbackStreaming.adaptiveFormats;
+                    // Carry over muxed formats (e.g. itag 18) from the
+                    // fallback client; keep the primary's if the fallback
+                    // returned none.
+                    if (fallbackStreaming.formats?.length) {
+                        youtubePlayerResponse.data.streamingData.formats =
+                            fallbackStreaming.formats;
+                    }
                 } else {
                     // Original (bot-blocked) response had no streaming data —
                     // adopt the fallback's wholesale.

@@ -13,6 +13,7 @@ import { parseArgs } from "@std/cli/parse-args";
 import { existsSync } from "@std/fs/exists";
 
 import { parseConfig } from "./lib/helpers/config.ts";
+import { closeKv } from "./lib/helpers/kv.ts";
 import { Metrics } from "./lib/helpers/metrics.ts";
 import { jsInterpreter } from "./lib/helpers/jsInterpreter.ts";
 import { CTX, logError, logInfo, logWarn } from "./lib/helpers/log.ts";
@@ -194,7 +195,9 @@ async function regenerateSession(reason: string): Promise<void> {
         // Cache this session under the egress proxy it was minted through, so a
         // later hop back to that proxy reuses it (see onActiveProxyChange).
         if (perProxySessionsEnabled) {
-            const egress = await getSessionEgressProxy(config).catch(() => null);
+            const egress = await getSessionEgressProxy(config).catch(() =>
+                null
+            );
             if (egress) {
                 perProxySessions.set(egress, {
                     client: newClient,
@@ -253,7 +256,10 @@ if (!innertubeClientOauthEnabled) {
         // still can't mint a token, the scheduled cron remains the long-term
         // fallback (it keeps retrying every `frequency`).
         const bootstrapMaxAttempts = usePool
-            ? Math.min(Math.max(config.networking.proxy_pool.proxies.length * 2, 6), 15)
+            ? Math.min(
+                Math.max(config.networking.proxy_pool.proxies.length * 2, 6),
+                15,
+            )
             : 6;
         retry(
             bootstrapAttempt,
@@ -521,6 +527,10 @@ if (import.meta.main) {
         }
 
         clearTimeout(forceExit);
+        // Flush and close the on-disk KV cache once no request can touch it.
+        await closeKv().catch((err) =>
+            logWarn(CTX.SHUTDOWN, `Failed to close KV cache: ${err}`)
+        );
         logInfo(CTX.SHUTDOWN, "Graceful shutdown completed");
         Deno.exit(0);
     };
