@@ -6,6 +6,8 @@
  * accidental or malicious loading of arbitrary modules via environment variables.
  */
 
+import { CTX, logWarn } from "./log.ts";
+
 function allowedInternalModules(moduleName: string): string[] {
     return [
         moduleName,
@@ -44,21 +46,13 @@ export function resolveAndValidateImportLocation(
 
     const allowedModules = allowedInternalModules(moduleName);
 
-    // Validate: must be an allowed internal module or a path under the project
-    // that resolves to a known module name
-    const basename = location.split("/").pop()?.replace(/\.ts$/, "") || "";
-
     if (allowedModules.includes(location)) {
         return location;
     }
 
-    if (allowedModules.includes(basename)) {
-        // Path ends with an allowed module name — accept it
-        // This covers compiled paths like file:///path/to/<moduleName>
-        return location;
-    }
-
-    // Reject anything that looks like a remote URL (http://, https://, npm:, etc.)
+    // Reject remote schemes BEFORE any basename-based acceptance. Otherwise
+    // "https://evil.example/getFetchClient.ts" would be accepted purely
+    // because its basename matches an allowed module name.
     if (/^(https?:|npm:|node:|jsr:)/i.test(location)) {
         throw new Error(
             `${envVarName} rejected: remote module URLs are not allowed. ` +
@@ -66,9 +60,9 @@ export function resolveAndValidateImportLocation(
         );
     }
 
-    // Reject path traversal beyond project root. At most one allowed leading
-    // "../lib/" prefix is tolerated; any ".." beyond that (including tricks
-    // like "../lib/../../etc/passwd") is rejected.
+    // Reject path traversal BEFORE basename-based acceptance, for the same
+    // reason. At most one leading "../lib/" prefix is tolerated; any ".."
+    // beyond that (including "../lib/../../etc/passwd") is rejected.
     const afterAllowedPrefix = location.startsWith(TRAVERSAL_ALLOWED_PREFIX)
         ? location.slice(TRAVERSAL_ALLOWED_PREFIX.length)
         : location;
@@ -79,9 +73,18 @@ export function resolveAndValidateImportLocation(
         );
     }
 
-    // Allow it but warn — it's a local path with an unrecognized module name
-    console.warn(
-        `[WARN]  [CONFIG] ${envVarName} uses non-standard module path: "${envLocation}". ` +
+    // Now that remote and traversal inputs are excluded, a path ending in an
+    // allowed module name is safe. This covers compiled paths such as
+    // file:///path/to/<moduleName>.
+    const basename = location.split("/").pop()?.replace(/\.ts$/, "") || "";
+    if (allowedModules.includes(basename)) {
+        return location;
+    }
+
+    // Local path with an unrecognised module name: allow, but warn.
+    logWarn(
+        CTX.CONFIG,
+        `${envVarName} uses non-standard module path: "${envLocation}". ` +
             `Allowed modules: ${allowedModules.join(", ")}`,
     );
 

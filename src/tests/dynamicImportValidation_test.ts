@@ -96,4 +96,64 @@ Deno.test("Dynamic import validation", async (t) => {
         assert(result.endsWith("getFetchClient"));
         cleanup();
     });
+
+    await t.step(
+        "rejects a remote URL even when its basename is an allowed module",
+        () => {
+            Deno.env.set(
+                "GET_FETCH_CLIENT_LOCATION",
+                "https://evil.example/getFetchClient.ts",
+            );
+            Deno.env.delete("DENO_COMPILED");
+            try {
+                assertThrows(
+                    () => resolveAndValidateFetchClientLocation(),
+                    Error,
+                    "remote module URLs are not allowed",
+                );
+            } finally {
+                cleanup();
+            }
+        },
+    );
+
+    await t.step(
+        "rejects path traversal even when its basename is an allowed module",
+        () => {
+            Deno.env.set(
+                "GET_FETCH_CLIENT_LOCATION",
+                "../../../tmp/getFetchClient.ts",
+            );
+            Deno.env.delete("DENO_COMPILED");
+            try {
+                assertThrows(
+                    () => resolveAndValidateFetchClientLocation(),
+                    Error,
+                    "suspicious path traversal",
+                );
+            } finally {
+                cleanup();
+            }
+        },
+    );
+
+    await t.step(
+        "rejects traversal hidden behind the allowed ../lib/ prefix",
+        () => {
+            Deno.env.set(
+                "GET_FETCH_CLIENT_LOCATION",
+                "../lib/../../tmp/getFetchClient.ts",
+            );
+            Deno.env.delete("DENO_COMPILED");
+            try {
+                assertThrows(
+                    () => resolveAndValidateFetchClientLocation(),
+                    Error,
+                    "suspicious path traversal",
+                );
+            } finally {
+                cleanup();
+            }
+        },
+    );
 });
