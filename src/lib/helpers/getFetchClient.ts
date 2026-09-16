@@ -186,6 +186,13 @@ export const getFetchClient = (config: Config, metrics?: Metrics): FetchFn => {
         const lastBlacklistTime = new Map<string, number>();
         const FAILURE_THRESHOLD = 3;
         const BLACKLIST_MS = 3_600_000; // 1 hour
+        // Cooldown re-validation is a network probe. Run it at most once per
+        // interval and share one in-flight run between concurrent requests,
+        // otherwise every request that arrives after a blacklist expires
+        // probes the same proxy in parallel (and pays the probe latency).
+        const REVALIDATE_MIN_INTERVAL_MS = 30_000;
+        let revalidateInFlight: Promise<void> | null = null;
+        let lastRevalidateAt = 0;
         let activeProxyUrl: string | null = null;
 
         const switchProxyOnLimit = proxyPool.switch_proxy_on_limit &&
@@ -287,7 +294,7 @@ export const getFetchClient = (config: Config, metrics?: Metrics): FetchFn => {
             }
         };
 
-        const revalidateCooldownProxies = async (): Promise<void> => {
+        const runCooldownRevalidation = async (): Promise<void> => {
             const candidates = getCooldownExpiredProxies();
             for (const proxyUrl of candidates) {
                 const isHealthy = await probeProxyHealth(proxyUrl);
@@ -311,6 +318,19 @@ export const getFetchClient = (config: Config, metrics?: Metrics): FetchFn => {
                     );
                 }
             }
+        };
+
+        const revalidateCooldownProxies = (): Promise<void> => {
+            if (revalidateInFlight) return revalidateInFlight;
+            const now = Date.now();
+            if (now - lastRevalidateAt < REVALIDATE_MIN_INTERVAL_MS) {
+                return Promise.resolve();
+            }
+            lastRevalidateAt = now;
+            revalidateInFlight = runCooldownRevalidation().finally(() => {
+                revalidateInFlight = null;
+            });
+            return revalidateInFlight;
         };
 
         const markProxyFailure = (proxyUrl: string) => {
