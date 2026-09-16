@@ -80,6 +80,11 @@ export const ConfigSchema = z.object({
             Deno.env.get("SERVER_ENABLE_METRICS") === "true" || false,
         ),
     }).strict().default({}),
+    captions: z.object({
+        enabled: z.boolean().default(
+            Deno.env.get("CAPTIONS_ENABLED") !== "false",
+        ),
+    }).strict().default({}),
     cache: z.object({
         enabled: z.boolean().default(
             Deno.env.get("CACHE_ENABLED") !== "false",

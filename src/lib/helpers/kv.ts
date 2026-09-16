@@ -1,4 +1,5 @@
 import type { Config } from "./config.ts";
+import { CTX, logWarn } from "./log.ts";
 
 // Deno 2.9 moved the no-argument Deno.openKv() default store to a
 // per-app OS data directory (e.g. $XDG_DATA_HOME) instead of DENO_DIR,
@@ -32,9 +33,9 @@ export const getKv = (config: Config): Promise<Deno.Kv> => {
         kvPromise = Deno.mkdir(cacheDir, { recursive: true })
             .then(() => Deno.openKv(`${cacheDir}/kv_cache.sqlite3`))
             .catch((err) => {
-                console.error(
-                    `[WARN] Failed to open the on-disk KV cache at ${cacheDir}/kv_cache.sqlite3, falling back to an in-memory store (cache will not persist across restarts)`,
-                    err,
+                logWarn(
+                    CTX.CACHE,
+                    `Failed to open the on-disk KV cache at ${cacheDir}/kv_cache.sqlite3, falling back to an in-memory store (cache will not persist across restarts): ${err}`,
                 );
                 return Deno.openKv(":memory:");
             });
