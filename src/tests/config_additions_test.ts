@@ -1,27 +1,6 @@
 import { assert, assertEquals } from "./deps.ts";
 import { parseConfig } from "../lib/helpers/config.ts";
-
-async function withTempConfig<T>(
-    content: string,
-    fn: () => Promise<T>,
-): Promise<T> {
-    const tempConfigPath = await Deno.makeTempFile({ suffix: ".toml" });
-    await Deno.writeTextFile(tempConfigPath, content);
-
-    const prevConfigFile = Deno.env.get("CONFIG_FILE");
-    Deno.env.set("CONFIG_FILE", tempConfigPath);
-
-    try {
-        return await fn();
-    } finally {
-        if (prevConfigFile === undefined) {
-            Deno.env.delete("CONFIG_FILE");
-        } else {
-            Deno.env.set("CONFIG_FILE", prevConfigFile);
-        }
-        await Deno.remove(tempConfigPath).catch(() => {});
-    }
-}
+import { withEnv, withTempConfig } from "./helpers/env.ts";
 
 Deno.test("Config validation additions", async (t) => {
     await t.step("rejects invalid cron expressions for frequency", async () => {
@@ -106,21 +85,15 @@ Deno.test("Config validation additions", async (t) => {
             await withTempConfig(
                 `[server]\nsecret_key = "1234567890abcdef"\n`,
                 async () => {
-                    Deno.env.set(
-                        "JOBS_YOUTUBE_SESSION_PLAYER_FALLBACK_CLIENTS",
-                        "TV_SIMPLY, ANDROID_VR",
+                    const config = await parseConfig();
+                    assertEquals(
+                        config.jobs.youtube_session.player_fallback_clients,
+                        ["TV_SIMPLY", "ANDROID_VR"],
                     );
-                    try {
-                        const config = await parseConfig();
-                        assertEquals(
-                            config.jobs.youtube_session.player_fallback_clients,
-                            ["TV_SIMPLY", "ANDROID_VR"],
-                        );
-                    } finally {
-                        Deno.env.delete(
-                            "JOBS_YOUTUBE_SESSION_PLAYER_FALLBACK_CLIENTS",
-                        );
-                    }
+                },
+                {
+                    JOBS_YOUTUBE_SESSION_PLAYER_FALLBACK_CLIENTS:
+                        "TV_SIMPLY, ANDROID_VR",
                 },
             );
         },
@@ -158,22 +131,25 @@ Deno.test("Config validation additions", async (t) => {
 
     await t.step("rejects missing SERVER_SECRET_KEY", async () => {
         await withTempConfig("", async () => {
-            Deno.env.delete("SERVER_SECRET_KEY");
-            try {
-                await parseConfig();
-                assert(
-                    false,
-                    "Config parsing should fail when SERVER_SECRET_KEY is missing",
-                );
-            } catch (error) {
-                assert(
-                    error instanceof Error &&
-                        error.message.includes("SERVER_SECRET_KEY"),
-                    `Should get validation error for missing secret key, got: ${
-                        error instanceof Error ? error.message : String(error)
-                    }`,
-                );
-            }
+            await withEnv({ SERVER_SECRET_KEY: undefined }, async () => {
+                try {
+                    await parseConfig();
+                    assert(
+                        false,
+                        "Config parsing should fail when SERVER_SECRET_KEY is missing",
+                    );
+                } catch (error) {
+                    assert(
+                        error instanceof Error &&
+                            error.message.includes("SERVER_SECRET_KEY"),
+                        `Should get validation error for missing secret key, got: ${
+                            error instanceof Error
+                                ? error.message
+                                : String(error)
+                        }`,
+                    );
+                }
+            });
         });
     });
 

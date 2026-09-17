@@ -1,33 +1,17 @@
 import { assert } from "./deps.ts";
 import { parseConfig } from "../lib/helpers/config.ts";
+import { withTempConfig as withTempConfigBase } from "./helpers/env.ts";
 
-async function withTempConfig<T>(
+// Every negative case here supplies its own [server].secret_key in the TOML,
+// but the env fallback must also be valid so a missing TOML key never masks
+// the assertion under test.
+function withTempConfig<T>(
     content: string,
     fn: () => Promise<T>,
 ): Promise<T> {
-    const tempConfigPath = await Deno.makeTempFile({ suffix: ".toml" });
-    await Deno.writeTextFile(tempConfigPath, content);
-
-    const prevConfigFile = Deno.env.get("CONFIG_FILE");
-    const prevSecretKey = Deno.env.get("SERVER_SECRET_KEY");
-    Deno.env.set("CONFIG_FILE", tempConfigPath);
-    Deno.env.set("SERVER_SECRET_KEY", "aaaaaaaaaaaaaaaa");
-
-    try {
-        return await fn();
-    } finally {
-        if (prevConfigFile === undefined) {
-            Deno.env.delete("CONFIG_FILE");
-        } else {
-            Deno.env.set("CONFIG_FILE", prevConfigFile);
-        }
-        if (prevSecretKey === undefined) {
-            Deno.env.delete("SERVER_SECRET_KEY");
-        } else {
-            Deno.env.set("SERVER_SECRET_KEY", prevSecretKey);
-        }
-        await Deno.remove(tempConfigPath).catch(() => {});
-    }
+    return withTempConfigBase(content, fn, {
+        SERVER_SECRET_KEY: "aaaaaaaaaaaaaaaa",
+    });
 }
 
 async function expectConfigError(
