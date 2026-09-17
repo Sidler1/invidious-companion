@@ -150,10 +150,10 @@ export const ConfigSchema = z.object({
                 times: z.number().int().min(1).max(10).optional().default(
                     envNumber("NETWORKING_FETCH_RETRY_TIMES") ?? 1,
                 ),
-                initial_debounce: z.number().optional().default(
+                initial_debounce: z.number().min(0).optional().default(
                     envNumber("NETWORKING_FETCH_RETRY_INITIAL_DEBOUNCE") ?? 0,
                 ),
-                debounce_multiplier: z.number().optional().default(
+                debounce_multiplier: z.number().min(0).optional().default(
                     envNumber("NETWORKING_FETCH_RETRY_DEBOUNCE_MULTIPLIER") ??
                         0,
                 ),

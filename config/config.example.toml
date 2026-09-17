@@ -18,7 +18,7 @@
 # # Base path Invidious companion will serve from
 # base_path = "/companion" # env variable: SERVER_BASE_PATH
 # # secret key needs to be exactly 16 characters long
-# secret_key = "CHANGE_ME" # env variable: SERVER_SECRET_KEY
+# secret_key = "CHANGEME12345678" # env variable: SERVER_SECRET_KEY
 # verify_requests = false # env variable: SERVER_VERIFY_REQUESTS
 # encrypt_query_params = false # env variable: SERVER_ENCRYPT_QUERY_PARAMS
 # enable_metrics = false # env variable: SERVER_ENABLE_METRICS
@@ -153,3 +153,6 @@
 # # proxies, match these to the egress country (e.g. gl = "US", hl = "en").
 # gl = "" # env variable: YOUTUBE_SESSION_GL
 # hl = "" # env variable: YOUTUBE_SESSION_HL
+# # Pin a specific YouTube player build. Useful for a few days after YouTube
+# # ships a player that youtubei.js cannot decipher yet. Empty = latest.
+# player_id = "" # env variable: YOUTUBE_SESSION_PLAYER_ID
