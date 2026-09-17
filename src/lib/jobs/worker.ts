@@ -7,6 +7,7 @@ import type { WebPoSignalOutput } from "bgutils";
 import { JSDOM } from "jsdom";
 import { Innertube } from "youtubei.js";
 import { resolveAndValidateFetchClientLocation } from "../helpers/dynamicImportValidation.ts";
+import { CTX, logError, logInfo } from "../helpers/log.ts";
 
 const getFetchClientLocation = resolveAndValidateFetchClientLocation();
 
@@ -86,8 +87,9 @@ if (isWorker) {
         // bubble up as a worker error event and tear down the whole session.
         const parsed = InputMessageSchema.safeParse(event.data);
         if (!parsed.success) {
-            console.error(
-                "[ERROR] PO-token worker received malformed message:",
+            logError(
+                CTX.PO_TOKEN,
+                "PO-token worker received malformed message",
                 parsed.error,
             );
             return;
@@ -223,8 +225,9 @@ async function setup(
     // Botguard currently surfaces a "Not implemented" error here, due to the environment
     // not having a valid Canvas API in JSDOM. At the time of writing, this doesn't cause
     // any issues as the Canvas check doesn't appear to be an enforced element of the checks
-    console.log(
-        '[INFO] the "Not implemented: HTMLCanvasElement.prototype.getContext" error is normal. Please do not open a bug report about it.',
+    logInfo(
+        CTX.PO_TOKEN,
+        'the "Not implemented: HTMLCanvasElement.prototype.getContext" error is normal. Please do not open a bug report about it.',
     );
     const botguard = await BG.BotGuardClient.create({
         program: challengeResponse.bg_challenge.program,

@@ -90,4 +90,51 @@ Deno.test("Redaction - redactString", async (t) => {
             assertEquals(result, "error (https://x/y?pot=[REDACTED])");
         },
     );
+
+    await t.step("masks URL userinfo embedded in a message", () => {
+        const str = "fetch failed for https://user:pass@example.com/path";
+        const result = redactString(str);
+        assertEquals(result.includes("user:pass"), false);
+        assertEquals(result.includes("//[REDACTED]@example.com"), true);
+    });
+
+    await t.step(
+        "redacts a sensitive param at the start of a string or after whitespace",
+        () => {
+            const atStart = redactString("token=abc123 is the value");
+            assertEquals(atStart.includes("abc123"), false);
+            const afterWhitespace = redactString(
+                "params were token=abc123 for this request",
+            );
+            assertEquals(afterWhitespace.includes("abc123"), false);
+        },
+    );
+});
+
+Deno.test("Redaction - hardening additions", async (t) => {
+    await t.step("masks URL userinfo in redactUrl", () => {
+        const url = "https://user:pass@example.com/path?itag=18";
+        const result = redactUrl(url);
+        assertEquals(result.includes("user:pass"), false);
+        assertEquals(result.includes("//[REDACTED]@example.com"), true);
+        assertEquals(result.includes("itag=18"), true);
+    });
+
+    await t.step("redacts the check param", () => {
+        const url = "https://example.com/download?id=abc&check=TOKEN123";
+        const result = redactUrl(url);
+        assertEquals(result.includes("TOKEN123"), false);
+        assertEquals(result.includes("check=[REDACTED]"), true);
+    });
+
+    await t.step(
+        "redacts secret_key even though it is prefixed by 'secret'",
+        () => {
+            const url = "https://example.com/x?secret_key=abc123&other=ok";
+            const result = redactUrl(url);
+            assertEquals(result.includes("abc123"), false);
+            assertEquals(result.includes("secret_key=[REDACTED]"), true);
+            assertEquals(result.includes("other=ok"), true);
+        },
+    );
 });

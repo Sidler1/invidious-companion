@@ -9,6 +9,8 @@ const SENSITIVE_PARAM_NAMES = [
     "key",
     "token",
     "secret",
+    // server.secret_key, forwarded verbatim in some error/debug contexts.
+    "secret_key",
     "authorization",
     "pot",
     "sig",
@@ -18,10 +20,24 @@ const SENSITIVE_PARAM_NAMES = [
     // Encrypted pot/ip blob on /videoplayback?enc=true.
     "data",
     "cookies",
+    // verifyRequest's signed request token (see routes/guards.ts).
+    "check",
 ];
 
 const BEARER_PATTERN = /Bearer\s+\S+/gi;
 const AUTH_HEADER_PATTERN = /Authorization:\s*\S+/gi;
+// `//user:pass@host` userinfo in any URL embedded in a log line/message.
+const USERINFO_PATTERN = /\/\/[^/\s@]+@/g;
+
+function paramPattern(param: string): RegExp {
+    // Matches the param name at the start of the string or after whitespace,
+    // not only after "?"/"&" — e.g. a log line like "params: key=secret"
+    // (no query-string delimiter) must still be caught.
+    return new RegExp(
+        `(^|[?&\\s])${param}=[^&\\s)'"]*`,
+        "gi",
+    );
+}
 
 /**
  * Redact sensitive query parameters from a URL string.
@@ -30,12 +46,9 @@ const AUTH_HEADER_PATTERN = /Authorization:\s*\S+/gi;
 export function redactUrl(urlStr: string): string {
     let result = urlStr;
     for (const param of SENSITIVE_PARAM_NAMES) {
-        const paramPattern = new RegExp(
-            `([?&])${param}=[^&\\s)'"]*`,
-            "gi",
-        );
-        result = result.replace(paramPattern, `$1${param}=[REDACTED]`);
+        result = result.replace(paramPattern(param), `$1${param}=[REDACTED]`);
     }
+    result = result.replace(USERINFO_PATTERN, "//[REDACTED]@");
     return result;
 }
 
@@ -49,13 +62,10 @@ export function redactString(str: string): string {
         AUTH_HEADER_PATTERN,
         "Authorization: [REDACTED]",
     );
+    result = result.replace(USERINFO_PATTERN, "//[REDACTED]@");
     // Redact query param values for known sensitive names
     for (const param of SENSITIVE_PARAM_NAMES) {
-        const paramPattern = new RegExp(
-            `([?&])${param}=[^&\\s)'"]*`,
-            "gi",
-        );
-        result = result.replace(paramPattern, `$1${param}=[REDACTED]`);
+        result = result.replace(paramPattern(param), `$1${param}=[REDACTED]`);
     }
     return result;
 }
