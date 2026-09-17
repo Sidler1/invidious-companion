@@ -230,4 +230,41 @@ Deno.test("Dynamic import validation", async (t) => {
             cleanup();
         },
     );
+
+    await t.step(
+        "rejects a data: URL even when it defines an allowed module name",
+        () => {
+            Deno.env.set(
+                "GET_FETCH_CLIENT_LOCATION",
+                "data:text/javascript,export function getFetchClient(){}",
+            );
+            Deno.env.delete("DENO_COMPILED");
+            try {
+                assertThrows(
+                    () => resolveAndValidateFetchClientLocation(),
+                    Error,
+                    "remote module URLs are not allowed",
+                );
+            } finally {
+                cleanup();
+            }
+        },
+    );
+
+    await t.step("rejects a blob: URL", () => {
+        Deno.env.set(
+            "GET_FETCH_CLIENT_LOCATION",
+            "blob:https://evil.example/uuid",
+        );
+        Deno.env.delete("DENO_COMPILED");
+        try {
+            assertThrows(
+                () => resolveAndValidateFetchClientLocation(),
+                Error,
+                "remote module URLs are not allowed",
+            );
+        } finally {
+            cleanup();
+        }
+    });
 });

@@ -19,7 +19,6 @@ import { Metrics } from "./lib/helpers/metrics.ts";
 import { jsInterpreter } from "./lib/helpers/jsInterpreter.ts";
 import { CTX, logError, logInfo, logWarn } from "./lib/helpers/log.ts";
 import { errorHandler } from "./routes/errorHandler.ts";
-import { rateLimit } from "./routes/rateLimit.ts";
 
 const config = await parseConfig();
 
@@ -328,31 +327,6 @@ if (!innertubeClientOauthEnabled) {
     tokenMinterReadyResolve?.();
 }
 
-// Inbound per-client throttle. Registered on companionApp only, so
-// /healthz, /readyz and /metrics on the root app stay exempt.
-if (config.server.rate_limit.enabled) {
-    if (config.server.use_unix_socket && !config.server.trust_proxy) {
-        logWarn(
-            CTX.SERVER,
-            "server.rate_limit is enabled over a Unix socket without " +
-                "server.trust_proxy: a Unix socket has no per-connection " +
-                "client address, so the per-client limiter cannot tell " +
-                "clients apart and will apply a single shared bucket to " +
-                "the whole instance unless a reverse proxy in front of it " +
-                "forwards X-Forwarded-For and trust_proxy is enabled.",
-        );
-    }
-    companionApp.use(
-        "*",
-        rateLimit({
-            requestsPerMinute: config.server.rate_limit.requests_per_minute,
-            burst: config.server.rate_limit.burst,
-            trustProxy: config.server.trust_proxy,
-            metrics,
-        }),
-    );
-}
-
 companionApp.use("*", async (c, next) => {
     c.set("innertubeClient", sharedState.getClient());
     c.set("tokenMinter", sharedState.getMinter());
@@ -361,7 +335,7 @@ companionApp.use("*", async (c, next) => {
     c.set("lastMintOkMs", lifecycle.lastMintOkMs);
     await next();
 });
-companionRoutes(companionApp, config);
+companionRoutes(companionApp, config, metrics);
 
 app.use("*", async (c, next) => {
     // The misc routes (incl. /readyz) live on this root app, so they need the

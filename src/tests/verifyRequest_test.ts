@@ -1,7 +1,7 @@
 import { assert, assertEquals } from "./deps.ts";
 import { verifyRequest } from "../lib/helpers/verifyRequest.ts";
 import { encryptGcm } from "../lib/helpers/crypto.ts";
-import { encodeBase64 } from "@std/encoding/base64";
+import { decodeBase64, encodeBase64 } from "@std/encoding/base64";
 import { makeTestConfig } from "./helpers/testConfig.ts";
 import { makeCheck } from "./helpers/check.ts";
 
@@ -45,8 +45,20 @@ Deno.test("verifyRequest tolerates two minutes of clock skew", async () => {
 
 Deno.test("verifyRequest rejects a tampered token", async () => {
     const check = await makeCheck(VIDEO_ID, config);
-    const flipped = check.slice(0, -2) + (check.at(-2) === "A" ? "B" : "A") +
-        check.slice(-1);
+    // Flip a byte inside the ciphertext region (layout: IV[12] || ciphertext
+    // || tag[16]; index 20 is well past the IV) rather than mutating a
+    // base64 character directly — some character positions only touch
+    // padding bits and decode to the same bytes, which made this
+    // flaky. XOR-ing a decoded byte always changes the plaintext/tag.
+    const bytes = decodeBase64(
+        check.replace(/-/g, "+").replace(/_/g, "/"),
+    );
+    const tampered = bytes.slice();
+    tampered[20] ^= 0xff;
+    const flipped = encodeBase64(tampered).replace(/\+/g, "-").replace(
+        /\//g,
+        "_",
+    );
     assertEquals(await verifyRequest(flipped, VIDEO_ID, config), false);
 });
 

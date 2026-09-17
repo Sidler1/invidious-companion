@@ -62,3 +62,24 @@ Deno.test("compactLogger records labelled latency and counts 401 responses", asy
     assertExists(sample);
     assertEquals((await metrics.authFailures.get()).values[0]?.value, 1);
 });
+
+Deno.test("compactLogger labels an unrecognised HTTP method as OTHER", async () => {
+    const metrics = new Metrics();
+    const app = new Hono<{ Variables: HonoVariables }>();
+    app.use("*", async (c, next) => {
+        c.set("metrics", metrics);
+        await next();
+    });
+    app.use("*", compactLogger);
+    app.on("PROPFIND", "/companion/x", (c) => c.text("ok"));
+
+    await captureConsoleLog(async () => {
+        await app.request("/companion/x", { method: "PROPFIND" });
+    });
+
+    const latency = await metrics.requestLatency.get();
+    const sample = latency.values.find((v) =>
+        v.labels.route === "/companion/x" && v.labels.method === "OTHER"
+    );
+    assertExists(sample);
+});

@@ -113,7 +113,16 @@ export async function handleTranscripts(
         }
 
         if (!response.ok) {
-            throw new HTTPException(response.status as ContentfulStatusCode, {
+            // Only forward the upstream status when it's a valid HTTP error
+            // code; anything else (e.g. a malformed/out-of-range status from
+            // a compromised or misbehaving upstream) becomes a plain 502
+            // rather than being handed to the client verbatim.
+            const upstreamStatus = response.status;
+            const status: ContentfulStatusCode =
+                upstreamStatus >= 400 && upstreamStatus <= 599
+                    ? upstreamStatus as ContentfulStatusCode
+                    : 502;
+            throw new HTTPException(status, {
                 res: new Response("Failed to fetch captions."),
             });
         }

@@ -67,7 +67,8 @@ Deno.test("Metrics - new upstream/proxy counters exist", () => {
         metrics.requestLatency,
         "requestLatency histogram should exist",
     );
-    metrics.requestLatency.observe(0.5);
+    metrics.requestLatency.labels("/companion/latest_version", "GET", "200")
+        .observe(0.5);
 });
 
 Deno.test("Metrics - registry contains all expected metrics", () => {

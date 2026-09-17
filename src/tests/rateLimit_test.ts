@@ -194,6 +194,45 @@ Deno.test("rateLimit falls back to one shared bucket over a Unix socket and warn
     }
 });
 
+Deno.test("rateLimit never rate limits requests with no connection info at all", async () => {
+    const clock = { now: 1_000_000 };
+    const app = buildApp(
+        { requestsPerMinute: 60, burst: 1, trustProxy: false },
+        clock,
+    );
+    // Exhaust the normal per-client bucket first.
+    assertEquals(
+        (await app.request("/x", {}, remoteEnv("10.0.0.1"))).status,
+        200,
+    );
+    assertEquals(
+        (await app.request("/x", {}, remoteEnv("10.0.0.1"))).status,
+        429,
+    );
+
+    const originalWarn = console.warn;
+    const warnings: string[] = [];
+    console.warn = (...args: unknown[]) => {
+        warnings.push(args.map(String).join(" "));
+    };
+    try {
+        // `app.request(url)` with no env at all — as used internally by
+        // /download's dispatch to /api/v1/captions and /latest_version —
+        // must never be throttled, and must not touch the shared bucket.
+        assertEquals((await app.request("/x")).status, 200);
+        assertEquals((await app.request("/x")).status, 200);
+        assertEquals(warnings.length, 0);
+    } finally {
+        console.warn = originalWarn;
+    }
+
+    // The already-exhausted client is unaffected by the env-less requests.
+    assertEquals(
+        (await app.request("/x", {}, remoteEnv("10.0.0.1"))).status,
+        429,
+    );
+});
+
 Deno.test("rateLimit evicts the least-recently-used bucket at the size cap", async () => {
     const clock = { now: 1_000_000 };
     const app = buildApp(

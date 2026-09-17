@@ -93,6 +93,19 @@ export function resolveAndValidateImportLocation(
         );
     }
 
+    // Reject any other scheme-looking location (e.g. "data:", "blob:") before
+    // falling through to basename-based acceptance below. "file:" is the one
+    // scheme legitimately used by compiled binaries (Deno.mainModule is a
+    // file:// URL), so it is the only one let through here.
+    if (
+        /^[a-z][a-z0-9+.-]*:/i.test(location) && !/^file:/i.test(location)
+    ) {
+        throw new Error(
+            `${envVarName} rejected: remote module URLs are not allowed. ` +
+                `Got: "${envLocation}". Only local/internal module paths are permitted.`,
+        );
+    }
+
     // Now that remote and traversal inputs are excluded, a path ending in an
     // allowed module name is safe. This covers compiled paths such as
     // file:///path/to/<moduleName>.

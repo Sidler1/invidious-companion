@@ -26,6 +26,23 @@ import type { MiddlewareHandler } from "hono";
 import { redactUrl } from "../lib/helpers/redactSensitive.ts";
 import { CTX, logInfo } from "../lib/helpers/log.ts";
 
+// Bounds the `method` label's cardinality on the requestLatency metric to a
+// fixed, known set — an arbitrary/malformed request method must never be
+// able to mint a new Prometheus label series.
+const KNOWN_METHODS = new Set([
+    "GET",
+    "POST",
+    "HEAD",
+    "PUT",
+    "PATCH",
+    "DELETE",
+    "OPTIONS",
+]);
+
+function methodLabel(method: string): string {
+    return KNOWN_METHODS.has(method) ? method : "OTHER";
+}
+
 /**
  * Extract a short, meaningful summary from a URL.
  * Returns the pathname + a few relevant query params.
@@ -119,7 +136,7 @@ export const compactLogger: MiddlewareHandler = async (c, next) => {
         // routePath is the matched pattern (":videoId" stays a placeholder),
         // so label cardinality is bounded by the number of routes.
         metrics.requestLatency
-            .labels(c.req.routePath, method, String(status))
+            .labels(c.req.routePath, methodLabel(method), String(status))
             .observe(elapsed / 1000);
         if (status === 401) {
             metrics.authFailures.inc();

@@ -37,34 +37,51 @@ const MAX_BUCKETS = 10_000;
 const RATE_LIMIT_BODY = "Too many requests.";
 const UNKNOWN_CLIENT = "unknown";
 
-let warnedUnknownClient = false;
+let warnedUnixSocket = false;
 
 /**
- * Logs once per process when the limiter cannot tell clients apart, so an
- * operator sees why a Unix-socket deployment (or any setup with no usable
- * connection info) is getting instance-wide throttling instead of per-user.
+ * Logs once per process when the limiter is running behind a Unix-socket
+ * listener with no way to tell clients apart, so an operator sees why that
+ * deployment is getting instance-wide throttling instead of per-user.
  */
-function warnUnknownClientOnce(): void {
-    if (warnedUnknownClient) return;
-    warnedUnknownClient = true;
+function warnUnixSocketOnce(): void {
+    if (warnedUnixSocket) return;
+    warnedUnixSocket = true;
     logWarn(
         CTX.SERVER,
-        "rateLimit: could not resolve a per-client identity (Unix socket " +
-            "listener, or no connection info available) — applying a single " +
-            "shared bucket to all requests instead of one per client.",
+        "rateLimit: request arrived over a Unix socket with no " +
+            "per-connection client address — applying a single shared " +
+            "bucket to all Unix-socket requests instead of one per client.",
     );
+}
+
+/**
+ * True when the request carries connection info at all (an object with a
+ * `remoteAddr`, however sparse). False for in-process dispatch such as
+ * `download.ts`'s `app.request(url)` calls to `/api/v1/captions` and
+ * `/latest_version`, which pass no env/third argument and therefore have no
+ * `remoteAddr` to key a bucket on — the middleware skips rate limiting for
+ * those entirely rather than lumping them into the shared "unknown" bucket.
+ * This is distinct from a Unix-socket connection, whose env *does* carry a
+ * `remoteAddr` (just one with no `hostname`).
+ */
+export function hasConnectionInfo(c: Context): boolean {
+    return (c.env as { remoteAddr?: unknown } | undefined)?.remoteAddr !=
+        null;
 }
 
 /**
  * Identify the client. With trustProxy the first X-Forwarded-For hop wins
  * (only correct behind a reverse proxy that overwrites the header);
- * otherwise the socket address. `app.request()` in tests has no connection
- * info unless an env with `remoteAddr` is passed, hence the fallback.
+ * otherwise the socket address. Callers must first check `hasConnectionInfo`
+ * — this always returns UNKNOWN_CLIENT when there is none, which the
+ * middleware treats as a Unix-socket-style shared bucket rather than the
+ * "skip entirely" case that a wholly env-less request gets.
  *
  * Notably always falls back to UNKNOWN_CLIENT on a Unix-socket listener:
  * `Deno.UnixAddr` has no `hostname`, so `getConnInfo(c).remote.address` is
  * always `undefined` there. Every request over the socket then collapses
- * into the same "unknown" bucket (see `warnUnknownClientOnce`) unless a
+ * into the same "unknown" bucket (see `warnUnixSocketOnce`) unless a
  * reverse proxy in front of it forwards `X-Forwarded-For` and `trustProxy`
  * is enabled.
  */
@@ -105,12 +122,20 @@ export function rateLimit(options: RateLimitOptions): MiddlewareHandler {
     };
 
     return async (c, next) => {
+        // In-process dispatch (no env/remoteAddr at all) never touched a
+        // real socket, so there is no client to rate limit — and no shared
+        // bucket for it to spuriously consume or exhaust either.
+        if (!hasConnectionInfo(c)) {
+            await next();
+            return;
+        }
+
         const t = now();
         pruneIdle(t);
 
         const ip = clientIpFrom(c, options.trustProxy);
         if (ip === UNKNOWN_CLIENT) {
-            warnUnknownClientOnce();
+            warnUnixSocketOnce();
         }
 
         const previous = buckets.get(ip) ??
