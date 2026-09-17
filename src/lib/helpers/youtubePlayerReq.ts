@@ -4,6 +4,7 @@ import type { TokenMinter } from "../jobs/potoken.ts";
 
 import type { Config } from "./config.ts";
 import { CTX, logWarn } from "./log.ts";
+import type { StreamingDataClients } from "./playerDecipher.ts";
 
 // A bot-block typically surfaces as a 200 OK with playabilityStatus
 // LOGIN_REQUIRED and a "confirm you're not a bot" / "protect our community"
@@ -82,6 +83,14 @@ export const youtubePlayerReq = async (
         innertubeClientUsed,
         contentPoToken,
     );
+    // Record which client produced each streaming-data array so the
+    // decipher/pot decision downstream is made for the streams actually
+    // being served, not for the primary client (see playerDecipher.ts).
+    const primaryClients: StreamingDataClients = {
+        formats: innertubeClientUsed,
+        adaptiveFormats: innertubeClientUsed,
+    };
+    youtubePlayerResponse.data.streamingDataClients = primaryClients;
 
     // Fall back to other YT clients when the primary (WEB) response is either
     // missing adaptive-format URLs OR has been bot-blocked. The bot-block case
@@ -127,15 +136,27 @@ export const youtubePlayerReq = async (
                     // Carry over muxed formats (e.g. itag 18) from the
                     // fallback client; keep the primary's if the fallback
                     // returned none.
-                    if (fallbackStreaming.formats?.length) {
+                    const fallbackHasFormats = !!fallbackStreaming.formats
+                        ?.length;
+                    if (fallbackHasFormats) {
                         youtubePlayerResponse.data.streamingData.formats =
                             fallbackStreaming.formats;
                     }
+                    youtubePlayerResponse.data.streamingDataClients = {
+                        formats: fallbackHasFormats
+                            ? innertubeClientType
+                            : primaryClients.formats,
+                        adaptiveFormats: innertubeClientType,
+                    } satisfies StreamingDataClients;
                 } else {
                     // Original (bot-blocked) response had no streaming data —
                     // adopt the fallback's wholesale.
                     youtubePlayerResponse.data.streamingData =
                         fallbackStreaming;
+                    youtubePlayerResponse.data.streamingDataClients = {
+                        formats: innertubeClientType,
+                        adaptiveFormats: innertubeClientType,
+                    } satisfies StreamingDataClients;
                 }
                 // If the primary was bot-blocked, adopt the fallback's
                 // playable status so downstream serves/caches the video.
