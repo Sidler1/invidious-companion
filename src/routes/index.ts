@@ -12,6 +12,7 @@ import metrics from "./metrics.ts";
 import health from "./health.ts";
 import readiness from "./readiness.ts";
 import { compactLogger } from "./compactLogger.ts";
+import { metricsAuthFailureCounter } from "./metricsAuthFailureCounter.ts";
 
 export const companionRoutes = (
     app: Hono,
@@ -46,6 +47,7 @@ export const miscRoutes = (
     app.route("/healthz", health);
     app.route("/readyz", readiness);
     if (config.server.enable_metrics) {
+        app.use("/metrics", metricsAuthFailureCounter);
         // Protect operational metrics with the same bearer token used for
         // /youtubei/v1. Scrapers must send `Authorization: Bearer <secret_key>`.
         app.use(
