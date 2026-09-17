@@ -213,7 +213,9 @@ redirects with `enc=true&data=`.
 `download.ts:16, 47-68`: `c.req.formData()` unguarded (500 on non-multipart);
 `title` unbounded; `ext` unconstrained; dead `videoId &&` at `:62`.
 **Required:** `formData()` in try/catch → 400 `"Invalid form data."`; Zod:
-`title` max 256 chars, `ext` matches `/^[a-z0-9]{1,5}$/`; remove dead code.
+`title` max 256 chars; itag branch `ext` matches `/^[a-z0-9]{1,5}$/`; label
+branch `ext` is bounded to 64 characters (Invidious sends `<languageCode>.vtt`
+and the value is unused downstream); remove dead code.
 
 ### C8 — LOW — Access logger bypasses `LOG_LEVEL`; redaction list gaps
 `compactLogger.ts:107,118` uses `console.log`; `redactSensitive.ts:8-16` omits
