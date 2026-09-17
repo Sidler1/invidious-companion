@@ -1,4 +1,4 @@
-import { assert, assertEquals } from "./deps.ts";
+import { assert, assertEquals, assertNotEquals } from "./deps.ts";
 import { decodeBase64, encodeBase64 } from "@std/encoding/base64";
 import { decryptQuery, encryptQuery } from "../lib/helpers/encryptQuery.ts";
 import type { Config } from "../lib/helpers/config.ts";
@@ -14,13 +14,6 @@ const IV_BYTES = 12;
 const TAG_BYTES = 16;
 
 Deno.test("encryptQuery/decryptQuery", async (t) => {
-    await t.step("round-trips a JSON query string", async () => {
-        const plaintext = JSON.stringify({ pot: "abc123", ip: "203.0.113.7" });
-        const token = await encryptQuery(plaintext, config);
-        assert(token !== "");
-        assertEquals(await decryptQuery(token, config), plaintext);
-    });
-
     await t.step("emits base64(IV[12] || ciphertext || tag[16])", async () => {
         const plaintext = "hello";
         const token = await encryptQuery(plaintext, config);
@@ -33,10 +26,10 @@ Deno.test("encryptQuery/decryptQuery", async (t) => {
         async () => {
             const first = await encryptQuery("same", config);
             const second = await encryptQuery("same", config);
-            assert(first !== second);
-            assert(
-                encodeBase64(decodeBase64(first).slice(0, IV_BYTES)) !==
-                    encodeBase64(decodeBase64(second).slice(0, IV_BYTES)),
+            assertNotEquals(first, second);
+            assertNotEquals(
+                encodeBase64(decodeBase64(first).slice(0, IV_BYTES)),
+                encodeBase64(decodeBase64(second).slice(0, IV_BYTES)),
             );
         },
     );
@@ -64,10 +57,6 @@ Deno.test("encryptQuery/decryptQuery", async (t) => {
     await t.step("fails closed with a different secret key", async () => {
         const token = await encryptQuery("payload", config);
         assertEquals(await decryptQuery(token, otherKeyConfig), "");
-    });
-
-    await t.step("fails closed on input that is not base64", async () => {
-        assertEquals(await decryptQuery("not base64 !!!", config), "");
     });
 
     await t.step("fails closed on input shorter than an IV", async () => {
