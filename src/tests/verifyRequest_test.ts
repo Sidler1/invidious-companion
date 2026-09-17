@@ -102,3 +102,78 @@ Deno.test("verifyRequest accepts a standard (non-url-safe) base64 token", async 
     const standard = check.replace(/-/g, "+").replace(/_/g, "/");
     assertEquals(await verifyRequest(standard, VIDEO_ID, config), true);
 });
+
+Deno.test("verifyRequest rejects an empty check", async () => {
+    assertEquals(await verifyRequest("", VIDEO_ID, config), false);
+});
+
+Deno.test("verifyRequest rejects a check signed with a different secret", async () => {
+    const check = await makeCheck(
+        VIDEO_ID,
+        makeTestConfig({ server: { secret_key: "bbbbbbbbbbbbbbbb" } }),
+    );
+    assertEquals(await verifyRequest(check, VIDEO_ID, config), false);
+});
+
+Deno.test("verifyRequest accepts a check just inside the six hour window", async () => {
+    const check = await makeCheck(
+        VIDEO_ID,
+        config,
+        nowSeconds() - 6 * 60 * 60 + 60,
+    );
+    assertEquals(await verifyRequest(check, VIDEO_ID, config), true);
+});
+
+Deno.test("verifyRequest accepts a check just inside the five minute skew tolerance", async () => {
+    const check = await makeCheck(VIDEO_ID, config, nowSeconds() + 5 * 60 - 60);
+    assertEquals(await verifyRequest(check, VIDEO_ID, config), true);
+});
+
+/**
+ * Deliberately independent of `encryptGcm`/`encryptQuery.ts`: this
+ * re-derives Invidious' `invidious_companion_encrypt`
+ * (../invidious/src/invidious/helpers/utils.cr) from scratch via WebCrypto
+ * instead of calling the companion's own AES-GCM helper. If the shared
+ * primitive had a bug, `makeCheck` and `verifyRequest` would silently agree
+ * with each other and the rest of this file would still pass; only a
+ * from-scratch signer can catch that. Layout: key = SHA-256(secret)
+ * imported raw as AES-256-GCM, 96-bit random IV, output
+ * IV || ciphertext || tag, base64url with `=` padding (Crystal's
+ * `Base64.urlsafe_encode` default).
+ */
+async function signIndependently(
+    plaintext: string,
+    secret: string,
+): Promise<string> {
+    const keyMaterial = await crypto.subtle.digest(
+        "SHA-256",
+        new TextEncoder().encode(secret),
+    );
+    const key = await crypto.subtle.importKey(
+        "raw",
+        keyMaterial,
+        { name: "AES-GCM" },
+        false,
+        ["encrypt"],
+    );
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const ciphertextWithTag = new Uint8Array(
+        await crypto.subtle.encrypt(
+            { name: "AES-GCM", iv },
+            key,
+            new TextEncoder().encode(plaintext),
+        ),
+    );
+    const combined = new Uint8Array(iv.length + ciphertextWithTag.length);
+    combined.set(iv, 0);
+    combined.set(ciphertextWithTag, iv.length);
+    return encodeBase64(combined).replace(/\+/g, "-").replace(/\//g, "_");
+}
+
+Deno.test("verifyRequest accepts a token produced by an independent Invidious-style signer", async () => {
+    const token = await signIndependently(
+        `${nowSeconds()}|${VIDEO_ID}`,
+        "aaaaaaaaaaaaaaaa",
+    );
+    assertEquals(await verifyRequest(token, VIDEO_ID, config), true);
+});
