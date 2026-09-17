@@ -1,61 +1,43 @@
 import { assertEquals, assertExists, assertRejects } from "./deps.ts";
+import { withTempConfig } from "./helpers/env.ts";
+import type { Config } from "../lib/helpers/config.ts";
 
-// We test the new proxy_pool config schema and basic behavior
-
-Deno.test("proxy_pool config parsing - disabled by default", () => {
-    const defaults = {
-        enabled: false,
-        rotation: "round-robin",
-        health_check: true,
-        proxies: [],
-    };
-    assertEquals(defaults.enabled, false);
-});
-
-Deno.test("proxy_pool config parsing - enabled with proxies", () => {
-    const raw = {
+// Builds a Config with the proxy pool enabled, from an otherwise-default
+// config. An empty temp config file makes the result independent of any
+// local config/config.toml.
+async function poolTestConfig(
+    proxies: string[],
+    options: { healthCheck?: boolean; switchProxyOnLimit?: boolean } = {},
+): Promise<Config> {
+    const { parseConfig } = await import("../lib/helpers/config.ts");
+    const config = await withTempConfig(
+        `[server]\nsecret_key = "aaaaaaaaaaaaaaaa"\n`,
+        () => parseConfig(),
+    );
+    return {
+        ...config,
         networking: {
+            ...config.networking,
             proxy_pool: {
                 enabled: true,
-                rotation: "round-robin",
-                health_check: true,
-                proxies: [
-                    "http://user:pass@proxy1:8080",
-                    "http://user:pass@proxy2:8080",
-                ],
+                rotation: "round-robin" as const,
+                health_check: options.healthCheck ?? true,
+                switch_proxy_on_limit: options.switchProxyOnLimit ?? false,
+                proxies,
             },
         },
     };
-
-    assertEquals(raw.networking.proxy_pool.enabled, true);
-    assertEquals(raw.networking.proxy_pool.rotation, "round-robin");
-    assertEquals(raw.networking.proxy_pool.proxies.length, 2);
-});
+}
 
 Deno.test({
     name: "getFetchClient with proxy_pool - basic creation (no real network)",
     fn: async () => {
-        Deno.env.set("SERVER_SECRET_KEY", "aaaaaaaaaaaaaaaa");
         const { getFetchClient } = await import(
             "../lib/helpers/getFetchClient.ts"
         );
-        const { parseConfig } = await import("../lib/helpers/config.ts");
-
-        const config = await parseConfig();
-
-        const testConfig = {
-            ...config,
-            networking: {
-                ...config.networking,
-                proxy_pool: {
-                    enabled: true,
-                    rotation: "round-robin" as const,
-                    health_check: true,
-                    switch_proxy_on_limit: false,
-                    proxies: ["http://user:pass@127.0.0.1:1"],
-                },
-            },
-        };
+        const testConfig = await poolTestConfig([
+            "http://user:pass@127.0.0.1:1",
+        ]);
 
         const fetchClient = getFetchClient(testConfig);
         assertExists(fetchClient);
@@ -111,27 +93,10 @@ Deno.test({
             const { getFetchClient } = await import(
                 "../lib/helpers/getFetchClient.ts"
             );
-            const { parseConfig } = await import("../lib/helpers/config.ts");
-            Deno.env.set("SERVER_SECRET_KEY", "aaaaaaaaaaaaaaaa");
-
-            const config = await parseConfig();
-
-            const testConfig = {
-                ...config,
-                networking: {
-                    ...config.networking,
-                    proxy_pool: {
-                        enabled: true,
-                        rotation: "round-robin" as const,
-                        health_check: true,
-                        switch_proxy_on_limit: false,
-                        proxies: [
-                            "http://u:p@proxy1:8080",
-                            "http://u:p@proxy2:8080",
-                        ],
-                    },
-                },
-            };
+            const testConfig = await poolTestConfig([
+                "http://u:p@proxy1:8080",
+                "http://u:p@proxy2:8080",
+            ]);
 
             const fetchClient = getFetchClient(testConfig);
             const result1 = await fetchClient("http://example.com/a");
@@ -219,27 +184,10 @@ Deno.test({
             const { getFetchClient } = await import(
                 "../lib/helpers/getFetchClient.ts"
             );
-            const { parseConfig } = await import("../lib/helpers/config.ts");
-            Deno.env.set("SERVER_SECRET_KEY", "aaaaaaaaaaaaaaaa");
-
-            const config = await parseConfig();
-
-            const testConfig = {
-                ...config,
-                networking: {
-                    ...config.networking,
-                    proxy_pool: {
-                        enabled: true,
-                        rotation: "round-robin" as const,
-                        health_check: true,
-                        switch_proxy_on_limit: false,
-                        proxies: [
-                            "http://u:p@proxy1:8080",
-                            "http://u:p@proxy2:8080",
-                        ],
-                    },
-                },
-            };
+            const testConfig = await poolTestConfig([
+                "http://u:p@proxy1:8080",
+                "http://u:p@proxy2:8080",
+            ]);
 
             const fetchClient = getFetchClient(testConfig);
             await fetchClient("http://example.com/1");
@@ -336,24 +284,9 @@ Deno.test({
             const { getFetchClient } = await import(
                 "../lib/helpers/getFetchClient.ts"
             );
-            const { parseConfig } = await import("../lib/helpers/config.ts");
-            Deno.env.set("SERVER_SECRET_KEY", "aaaaaaaaaaaaaaaa");
-
-            const config = await parseConfig();
-
-            const testConfig = {
-                ...config,
-                networking: {
-                    ...config.networking,
-                    proxy_pool: {
-                        enabled: true,
-                        rotation: "round-robin" as const,
-                        health_check: true,
-                        switch_proxy_on_limit: false,
-                        proxies: ["http://u:p@proxy1:8080"],
-                    },
-                },
-            };
+            const testConfig = await poolTestConfig(
+                ["http://u:p@proxy1:8080"],
+            );
 
             const fetchClient = getFetchClient(testConfig);
 
@@ -404,27 +337,11 @@ Deno.test({
         try {
             const { getSessionEgressProxy, rotateSessionEgressProxy } =
                 await import("../lib/helpers/getFetchClient.ts");
-            const { parseConfig } = await import("../lib/helpers/config.ts");
-            Deno.env.set("SERVER_SECRET_KEY", "aaaaaaaaaaaaaaaa");
-
-            const config = await parseConfig();
             const proxies = [
                 "http://u:p@proxy-a:8080",
                 "http://u:p@proxy-b:8080",
             ];
-            const testConfig = {
-                ...config,
-                networking: {
-                    ...config.networking,
-                    proxy_pool: {
-                        enabled: true,
-                        rotation: "round-robin" as const,
-                        health_check: true,
-                        switch_proxy_on_limit: false,
-                        proxies,
-                    },
-                },
-            };
+            const testConfig = await poolTestConfig(proxies);
 
             const first = await getSessionEgressProxy(testConfig);
             const second = await rotateSessionEgressProxy(testConfig);
@@ -473,23 +390,9 @@ Deno.test({
             const { getFetchClient } = await import(
                 "../lib/helpers/getFetchClient.ts"
             );
-            const { parseConfig } = await import("../lib/helpers/config.ts");
-            Deno.env.set("SERVER_SECRET_KEY", "aaaaaaaaaaaaaaaa");
-
-            const config = await parseConfig();
-            const testConfig = {
-                ...config,
-                networking: {
-                    ...config.networking,
-                    proxy_pool: {
-                        enabled: true,
-                        rotation: "round-robin" as const,
-                        health_check: true,
-                        switch_proxy_on_limit: false,
-                        proxies: ["http://u:p@proxy1:8080"],
-                    },
-                },
-            };
+            const testConfig = await poolTestConfig(
+                ["http://u:p@proxy1:8080"],
+            );
 
             const fetchClient = getFetchClient(testConfig);
             const controller = new AbortController();
