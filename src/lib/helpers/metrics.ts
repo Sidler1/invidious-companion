@@ -141,6 +141,11 @@ export class Metrics {
         "Number of requests rejected because the check parameter was missing or invalid",
     );
 
+    public rateLimitRejections = this.createCounter(
+        "rate_limit_rejections_total",
+        "Number of inbound requests rejected with 429 by the per-client rate limiter",
+    );
+
     public mintTimeouts = this.createCounter(
         "mint_timeouts_total",
         "Number of per-video content-token mints that hit the mint timeout",

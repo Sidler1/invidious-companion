@@ -19,6 +19,7 @@ import { Metrics } from "./lib/helpers/metrics.ts";
 import { jsInterpreter } from "./lib/helpers/jsInterpreter.ts";
 import { CTX, logError, logInfo, logWarn } from "./lib/helpers/log.ts";
 import { errorHandler } from "./routes/errorHandler.ts";
+import { rateLimit } from "./routes/rateLimit.ts";
 
 const config = await parseConfig();
 
@@ -325,6 +326,20 @@ if (!innertubeClientOauthEnabled) {
     await innertubeClient.session.oauth.cacheCredentials();
     // Resolve promise for tests
     tokenMinterReadyResolve?.();
+}
+
+// Inbound per-client throttle. Registered on companionApp only, so
+// /healthz, /readyz and /metrics on the root app stay exempt.
+if (config.server.rate_limit.enabled) {
+    companionApp.use(
+        "*",
+        rateLimit({
+            requestsPerMinute: config.server.rate_limit.requests_per_minute,
+            burst: config.server.rate_limit.burst,
+            trustProxy: config.server.trust_proxy,
+            metrics,
+        }),
+    );
 }
 
 companionApp.use("*", async (c, next) => {

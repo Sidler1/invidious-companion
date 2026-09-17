@@ -79,6 +79,26 @@ export const ConfigSchema = z.object({
         enable_metrics: z.boolean().default(
             Deno.env.get("SERVER_ENABLE_METRICS") === "true" || false,
         ),
+        // Trust the first hop of X-Forwarded-For for client identification
+        // (rate limiting). Only enable behind a reverse proxy you control.
+        trust_proxy: z.boolean().default(
+            Deno.env.get("SERVER_TRUST_PROXY") === "true",
+        ),
+        // Inbound per-client-IP token bucket. Companion routes are reachable
+        // by end-user browsers (Invidious redirects to them), so an
+        // unauthenticated client could otherwise burn the egress IP's
+        // anti-bot budget by enumerating video IDs.
+        rate_limit: z.object({
+            enabled: z.boolean().default(
+                Deno.env.get("SERVER_RATE_LIMIT_ENABLED") !== "false",
+            ),
+            requests_per_minute: z.number().int().min(1).max(100_000).default(
+                envNumber("SERVER_RATE_LIMIT_RPM") ?? 120,
+            ),
+            burst: z.number().int().min(1).max(100_000).default(
+                envNumber("SERVER_RATE_LIMIT_BURST") ?? 60,
+            ),
+        }).strict().default({}),
     }).strict().default({}),
     captions: z.object({
         enabled: z.boolean().default(
