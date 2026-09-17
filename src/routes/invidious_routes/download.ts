@@ -8,15 +8,19 @@ import {
 } from "../guards.ts";
 import type { HonoVariables } from "../../lib/types/HonoVariables.ts";
 
-// Invidious' download widget sends fixed lowercase extensions (mp4, webm,
-// m4a, vtt); anything else would be spliced into a filename / query param.
-const ExtensionSchema = z.string().regex(/^[a-z0-9]{1,5}$/);
+// Invidious' download widget sends, for the itag branch, a mime subtype
+// (mp4, webm, m4a) that gets spliced into a filename / query param, so it's
+// bounded to a strict format. For the label (captions) branch it sends
+// "<languageCode>.vtt" (e.g. "en.vtt", "es-419.vtt", "zh-Hans.vtt") — that
+// value is never used downstream, so only its length is bounded.
+const ItagExtensionSchema = z.string().regex(/^[a-z0-9]{1,5}$/);
+const LabelExtensionSchema = z.string().max(64);
 const MAX_TITLE_LENGTH = 256;
 
 const DownloadWidgetSchema = z.union([
-    z.object({ label: z.string().min(1).max(256), ext: ExtensionSchema })
+    z.object({ label: z.string().min(1).max(256), ext: LabelExtensionSchema })
         .strict(),
-    z.object({ itag: z.number().int().positive(), ext: ExtensionSchema })
+    z.object({ itag: z.number().int().positive(), ext: ItagExtensionSchema })
         .strict(),
 ]);
 

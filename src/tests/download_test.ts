@@ -68,10 +68,27 @@ Deno.test("download dispatches a caption label to the captions route", async () 
     const res = await app.request(formRequest({
         id: VIDEO_ID,
         title: "My Video",
-        download_widget: JSON.stringify({ label: "English", ext: "vtt" }),
+        download_widget: JSON.stringify({ label: "English", ext: "en.vtt" }),
     }));
     assertEquals(res.status, 200);
     assertEquals(await res.text(), `captions ${VIDEO_ID} English`);
+});
+
+Deno.test("download dispatches a regional caption label to the captions route", async () => {
+    const app = buildApp();
+    const res = await app.request(formRequest({
+        id: VIDEO_ID,
+        title: "My Video",
+        download_widget: JSON.stringify({
+            label: "Spanish (Latin America)",
+            ext: "es-419.vtt",
+        }),
+    }));
+    assertEquals(res.status, 200);
+    assertEquals(
+        await res.text(),
+        `captions ${VIDEO_ID} Spanish (Latin America)`,
+    );
 });
 
 Deno.test("download dispatches an itag to latest_version with local=true", async () => {
@@ -91,12 +108,26 @@ Deno.test("download dispatches an itag to latest_version with local=true", async
     assertEquals(params.get("title"), `My Video-${VIDEO_ID}.mp4`);
 });
 
-Deno.test("download rejects an extension with unexpected characters", async () => {
+Deno.test("download rejects an itag-branch extension with unexpected characters", async () => {
     const app = buildApp();
     const res = await app.request(formRequest({
         id: VIDEO_ID,
         title: "My Video",
-        download_widget: JSON.stringify({ itag: 18, ext: 'mp4"; x=' }),
+        download_widget: JSON.stringify({ itag: 18, ext: "MP4!" }),
+    }));
+    assertEquals(res.status, 400);
+    assertEquals(await res.text(), "Invalid form data required for download");
+});
+
+Deno.test("download rejects an over-long label-branch extension", async () => {
+    const app = buildApp();
+    const res = await app.request(formRequest({
+        id: VIDEO_ID,
+        title: "My Video",
+        download_widget: JSON.stringify({
+            label: "English",
+            ext: "x".repeat(65),
+        }),
     }));
     assertEquals(res.status, 400);
     assertEquals(await res.text(), "Invalid form data required for download");
