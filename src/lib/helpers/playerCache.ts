@@ -24,13 +24,25 @@ function keyLabel(key: Deno.KvKey): string {
 
 /**
  * Read and decompress a cached player response. A corrupted entry is deleted
- * and treated as a miss so the caller falls through to a fresh fetch.
+ * and treated as a miss so the caller falls through to a fresh fetch. Never
+ * rejects: a transient KV read failure (disk full, database closed during
+ * shutdown, SQLite lock) also degrades to a miss.
  */
 export async function readCachedPlayerResponse(
     kv: Deno.Kv,
     key: Deno.KvKey,
 ): Promise<object | null> {
-    const entry = await kv.get<Uint8Array>(key);
+    let entry: Deno.KvEntryMaybe<Uint8Array>;
+    try {
+        entry = await kv.get<Uint8Array>(key);
+    } catch (err) {
+        logError(
+            CTX.CACHE,
+            `Failed to read ${keyLabel(key)} from cache`,
+            err,
+        );
+        return null;
+    }
     if (entry.value == null) return null;
     try {
         return JSON.parse(new TextDecoder().decode(decompress(entry.value)));

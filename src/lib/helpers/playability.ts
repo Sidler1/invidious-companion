@@ -23,7 +23,7 @@ export function assertPlayable(videoId: string, json: object): void {
     throw new HTTPException(403, {
         res: new Response(
             "The video can't be played: " + videoId + " due to reason: " +
-                reason,
+                (reason ?? ""),
         ),
     });
 }

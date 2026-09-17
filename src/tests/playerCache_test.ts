@@ -76,5 +76,17 @@ Deno.test("player cache helpers", async (t) => {
         assert(!rejected, "writePlayerCache must swallow and log failures");
     });
 
+    await t.step("returns null when the KV read fails", async () => {
+        const closed = await Deno.openKv(":memory:");
+        closed.close();
+
+        const value = await readCachedPlayerResponse(
+            closed,
+            videoCacheKey(0, "x"),
+        );
+
+        assertEquals(value, null);
+    });
+
     kv.close();
 });

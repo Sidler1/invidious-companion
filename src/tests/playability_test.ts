@@ -40,4 +40,18 @@ Deno.test("assertPlayable", async (t) => {
             "The video can't be played: abcdefghijk due to reason: Video unavailable",
         );
     });
+
+    await t.step("renders an empty reason when none is given", async () => {
+        const err = assertThrows(
+            () =>
+                assertPlayable("abcdefghijk", {
+                    playabilityStatus: { status: "UNPLAYABLE" },
+                }),
+            HTTPException,
+        );
+        assertEquals(
+            await err.getResponse().text(),
+            "The video can't be played: abcdefghijk due to reason: ",
+        );
+    });
 });

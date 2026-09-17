@@ -114,6 +114,10 @@ Deno.test("route guards on a seeded ERROR player response", async (t) => {
             assertEquals(res.status, 404);
         });
     } finally {
+        // Deliberate: closeKv() resets the process-global memo in
+        // src/lib/helpers/kv.ts, which every test file in this process
+        // shares. Other test files must not hold a getKv() handle open
+        // across this file running.
         await closeKv();
         await Deno.remove(tempDir, { recursive: true });
     }
