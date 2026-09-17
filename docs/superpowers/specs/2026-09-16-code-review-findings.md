@@ -188,10 +188,14 @@ Companion routes are browser-facing; `verify_requests` defaults to false; a
 `check` is replayable for 6 h; every captions request mints a PO token.
 **Required:** per-client-IP token bucket middleware on the companion app
 (configurable `server.rate_limit.enabled`, `requests_per_minute`, `burst`;
-default enabled, 120 rpm, burst 60) returning 429 with body
+default disabled; operators enable it when the companion sees real client
+IPs (see README); 120 rpm, burst 60) returning 429 with body
 `"Too many requests."`. Client IP from `X-Forwarded-For` first hop when
 `server.trust_proxy` is true, else the socket address. `/healthz`, `/readyz`,
-`/metrics` are exempt.
+`/metrics` are exempt. Invidious's default same-origin `/companion/*`
+reverse proxy does not forward `X-Forwarded-For`, so behind that proxy the
+companion sees only Invidious's own backend IP for every user — this is why
+the limiter defaults off rather than on.
 
 ### C5 — MEDIUM — Route guard chain duplicated four times
 `captions.ts:29-59`, `latestVersion.ts:26-54`, `download.ts:25-45`,
