@@ -1,5 +1,6 @@
 import { assertEquals } from "./deps.ts";
 import { checkYouTubeBlock } from "../lib/helpers/youtubeBlockDetection.ts";
+import { withEnv } from "./helpers/env.ts";
 
 /**
  * Drive checkYouTubeBlock through the direct fetch path: no proxy, no pool,
@@ -8,49 +9,53 @@ import { checkYouTubeBlock } from "../lib/helpers/youtubeBlockDetection.ts";
  */
 async function blockDetected(response: Response): Promise<boolean> {
     const originalFetch = globalThis.fetch;
-    const originalSecret = Deno.env.get("SERVER_SECRET_KEY");
     let hookCalls = 0;
     try {
-        Deno.env.set("SERVER_SECRET_KEY", "aaaaaaaaaaaaaaaa");
-        const { getFetchClient, setOnYouTubeBlock } = await import(
-            "../lib/helpers/getFetchClient.ts"
-        );
-        const { parseConfig } = await import("../lib/helpers/config.ts");
-        // Fresh object so the singleton is rebuilt; a single proxy URL
-        // selects the single-proxy path (the only non-pool path that runs
-        // checkYouTubeBlock). No connection is made: fetch is mocked.
-        const base = await parseConfig();
-        const config = {
-            ...base,
-            networking: {
-                ...base.networking,
-                proxy: "http://u:p@127.0.0.1:1",
-                ipv6_block: null,
-                proxy_pool: { ...base.networking.proxy_pool, enabled: false },
-            },
-        };
-        globalThis.fetch = (() => Promise.resolve(response)) as typeof fetch;
-        setOnYouTubeBlock(() => {
-            hookCalls += 1;
-        });
+        return await withEnv(
+            { SERVER_SECRET_KEY: "aaaaaaaaaaaaaaaa" },
+            async () => {
+                const { getFetchClient, setOnYouTubeBlock } = await import(
+                    "../lib/helpers/getFetchClient.ts"
+                );
+                const { parseConfig } = await import(
+                    "../lib/helpers/config.ts"
+                );
+                // Fresh object so the singleton is rebuilt; a single proxy URL
+                // selects the single-proxy path (the only non-pool path that runs
+                // checkYouTubeBlock). No connection is made: fetch is mocked.
+                const base = await parseConfig();
+                const config = {
+                    ...base,
+                    networking: {
+                        ...base.networking,
+                        proxy: "http://u:p@127.0.0.1:1",
+                        ipv6_block: null,
+                        proxy_pool: {
+                            ...base.networking.proxy_pool,
+                            enabled: false,
+                        },
+                    },
+                };
+                globalThis.fetch = (() =>
+                    Promise.resolve(response)) as typeof fetch;
+                setOnYouTubeBlock(() => {
+                    hookCalls += 1;
+                });
 
-        const fetchClient = getFetchClient(config);
-        const res = await fetchClient(
-            "https://www.youtube.com/youtubei/v1/player",
+                const fetchClient = getFetchClient(config);
+                const res = await fetchClient(
+                    "https://www.youtube.com/youtubei/v1/player",
+                );
+                await res.body?.cancel().catch(() => {});
+                return hookCalls > 0;
+            },
         );
-        await res.body?.cancel().catch(() => {});
-        return hookCalls > 0;
     } finally {
         globalThis.fetch = originalFetch;
         const { setOnYouTubeBlock } = await import(
             "../lib/helpers/getFetchClient.ts"
         );
         setOnYouTubeBlock(() => {});
-        if (originalSecret === undefined) {
-            Deno.env.delete("SERVER_SECRET_KEY");
-        } else {
-            Deno.env.set("SERVER_SECRET_KEY", originalSecret);
-        }
     }
 }
 

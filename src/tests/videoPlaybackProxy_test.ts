@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { assert, assertEquals } from "./deps.ts";
+import { withEnv } from "./helpers/env.ts";
 import type { HonoVariables } from "../lib/types/HonoVariables.ts";
 import type { Config } from "../lib/helpers/config.ts";
 // Type-only import: pulls in main.ts's `declare module "hono"` augmentation
@@ -27,48 +28,48 @@ async function withProxyApp(
     ) => Promise<void>,
 ): Promise<void> {
     const originalFetch = globalThis.fetch;
-    const originalSecret = Deno.env.get("SERVER_SECRET_KEY");
     const calls: FetchCall[] = [];
     try {
-        Deno.env.set("SERVER_SECRET_KEY", "aaaaaaaaaaaaaaaa");
-        const { parseConfig } = await import("../lib/helpers/config.ts");
-        const { default: videoPlaybackProxy } = await import(
-            "../routes/videoPlaybackProxy.ts"
-        );
-        const base = await parseConfig();
-        // Force the direct path regardless of PROXY / IPv6 env on the host.
-        const config: Config = {
-            ...base,
-            networking: {
-                ...base.networking,
-                proxy: null,
-                ipv6_block: null,
-                proxy_pool: { ...base.networking.proxy_pool, enabled: false },
-            },
-        };
+        await withEnv({ SERVER_SECRET_KEY: "aaaaaaaaaaaaaaaa" }, async () => {
+            const { parseConfig } = await import("../lib/helpers/config.ts");
+            const { default: videoPlaybackProxy } = await import(
+                "../routes/videoPlaybackProxy.ts"
+            );
+            const base = await parseConfig();
+            // Force the direct path regardless of PROXY / IPv6 env on the host.
+            const config: Config = {
+                ...base,
+                networking: {
+                    ...base.networking,
+                    proxy: null,
+                    ipv6_block: null,
+                    proxy_pool: {
+                        ...base.networking.proxy_pool,
+                        enabled: false,
+                    },
+                },
+            };
 
-        globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
-            const call = { url: String(input), init: init ?? {} };
-            calls.push(call);
-            return Promise.resolve(respond(call, calls.length - 1));
-        }) as typeof fetch;
+            globalThis.fetch = (
+                (input: RequestInfo | URL, init?: RequestInit) => {
+                    const call = { url: String(input), init: init ?? {} };
+                    calls.push(call);
+                    return Promise.resolve(respond(call, calls.length - 1));
+                }
+            ) as typeof fetch;
 
-        const app = new Hono<{ Variables: HonoVariables }>();
-        app.use("*", async (c, next) => {
-            c.set("config", config);
-            c.set("metrics", undefined);
-            await next();
+            const app = new Hono<{ Variables: HonoVariables }>();
+            app.use("*", async (c, next) => {
+                c.set("config", config);
+                c.set("metrics", undefined);
+                await next();
+            });
+            app.route("/videoplayback", videoPlaybackProxy);
+
+            await run(app, calls);
         });
-        app.route("/videoplayback", videoPlaybackProxy);
-
-        await run(app, calls);
     } finally {
         globalThis.fetch = originalFetch;
-        if (originalSecret === undefined) {
-            Deno.env.delete("SERVER_SECRET_KEY");
-        } else {
-            Deno.env.set("SERVER_SECRET_KEY", originalSecret);
-        }
     }
 }
 
@@ -122,66 +123,75 @@ Deno.test("videoPlaybackProxy", async (t) => {
         "returns 502 'Upstream timeout.' when headers never arrive within the configured timeout",
         async () => {
             const originalFetch = globalThis.fetch;
-            const originalSecret = Deno.env.get("SERVER_SECRET_KEY");
             try {
-                Deno.env.set("SERVER_SECRET_KEY", "aaaaaaaaaaaaaaaa");
-                const { parseConfig } = await import(
-                    "../lib/helpers/config.ts"
-                );
-                const { default: videoPlaybackProxy } = await import(
-                    "../routes/videoPlaybackProxy.ts"
-                );
-                const base = await parseConfig();
-                const config: Config = {
-                    ...base,
-                    networking: {
-                        ...base.networking,
-                        proxy: null,
-                        ipv6_block: null,
-                        proxy_pool: {
-                            ...base.networking.proxy_pool,
-                            enabled: false,
-                        },
-                        fetch: { ...base.networking.fetch, timeout_ms: 1000 },
-                    },
-                };
+                await withEnv(
+                    { SERVER_SECRET_KEY: "aaaaaaaaaaaaaaaa" },
+                    async () => {
+                        const { parseConfig } = await import(
+                            "../lib/helpers/config.ts"
+                        );
+                        const { default: videoPlaybackProxy } = await import(
+                            "../routes/videoPlaybackProxy.ts"
+                        );
+                        const base = await parseConfig();
+                        const config: Config = {
+                            ...base,
+                            networking: {
+                                ...base.networking,
+                                proxy: null,
+                                ipv6_block: null,
+                                proxy_pool: {
+                                    ...base.networking.proxy_pool,
+                                    enabled: false,
+                                },
+                                fetch: {
+                                    ...base.networking.fetch,
+                                    timeout_ms: 1000,
+                                },
+                            },
+                        };
 
-                globalThis.fetch = (
-                    (_input: RequestInfo | URL, init?: RequestInit) => {
-                        const signal = init?.signal;
-                        return new Promise<Response>((_resolve, reject) => {
-                            signal?.addEventListener("abort", () => {
-                                reject(
-                                    new DOMException(
-                                        "aborted",
-                                        "AbortError",
-                                    ),
+                        globalThis.fetch = (
+                            (
+                                _input: RequestInfo | URL,
+                                init?: RequestInit,
+                            ) => {
+                                const signal = init?.signal;
+                                return new Promise<Response>(
+                                    (_resolve, reject) => {
+                                        signal?.addEventListener(
+                                            "abort",
+                                            () => {
+                                                reject(
+                                                    new DOMException(
+                                                        "aborted",
+                                                        "AbortError",
+                                                    ),
+                                                );
+                                            },
+                                        );
+                                    },
                                 );
-                            });
+                            }
+                        ) as typeof fetch;
+
+                        const app = new Hono<{ Variables: HonoVariables }>();
+                        app.use("*", async (c, next) => {
+                            c.set("config", config);
+                            c.set("metrics", undefined);
+                            await next();
                         });
-                    }
-                ) as typeof fetch;
+                        app.route("/videoplayback", videoPlaybackProxy);
 
-                const app = new Hono<{ Variables: HonoVariables }>();
-                app.use("*", async (c, next) => {
-                    c.set("config", config);
-                    c.set("metrics", undefined);
-                    await next();
-                });
-                app.route("/videoplayback", videoPlaybackProxy);
-
-                const res = await app.request(
-                    `/videoplayback?host=${GV_A}&c=WEB&expire=${futureExpire()}&id=abc`,
+                        const res = await app.request(
+                            `/videoplayback?host=${GV_A}&c=WEB&expire=${futureExpire()}&id=abc`,
+                        );
+                        assertEquals(res.status, 502);
+                        assertEquals(await res.text(), "Upstream timeout.");
+                    },
                 );
-                assertEquals(res.status, 502);
-                assertEquals(await res.text(), "Upstream timeout.");
             } finally {
                 globalThis.fetch = originalFetch;
-                if (originalSecret === undefined) {
-                    Deno.env.delete("SERVER_SECRET_KEY");
-                } else {
-                    Deno.env.set("SERVER_SECRET_KEY", originalSecret);
-                }
             }
         },
     );

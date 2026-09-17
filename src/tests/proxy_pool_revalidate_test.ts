@@ -1,4 +1,5 @@
 import { assertEquals } from "./deps.ts";
+import { withEnv } from "./helpers/env.ts";
 
 Deno.test({
     name:
@@ -7,7 +8,6 @@ Deno.test({
         const originalFetch = globalThis.fetch;
         const originalCreateHttpClient = Deno.createHttpClient;
         const originalDateNow = Date.now;
-        const originalSecret = Deno.env.get("SERVER_SECRET_KEY");
         let now = 1_000_000;
         let createdClients = 0;
         const probesByClient = new Map<number, number>();
@@ -93,99 +93,108 @@ Deno.test({
         }) as typeof fetch;
 
         try {
-            Deno.env.set("SERVER_SECRET_KEY", "aaaaaaaaaaaaaaaa");
-            const { getFetchClient, rotateSessionEgressProxy } = await import(
-                "../lib/helpers/getFetchClient.ts"
-            );
-            const { parseConfig } = await import("../lib/helpers/config.ts");
-            const config = await parseConfig();
-            const testConfig = {
-                ...config,
-                networking: {
-                    ...config.networking,
-                    proxy_pool: {
-                        enabled: true,
-                        rotation: "round-robin" as const,
-                        health_check: true,
-                        switch_proxy_on_limit: false,
-                        proxies: [
-                            "http://u:p@proxy1:8080",
-                            "http://u:p@proxy2:8080",
-                            "http://u:p@proxy3:8080",
-                        ],
-                    },
+            await withEnv(
+                { SERVER_SECRET_KEY: "aaaaaaaaaaaaaaaa" },
+                async () => {
+                    const { getFetchClient, rotateSessionEgressProxy } =
+                        await import("../lib/helpers/getFetchClient.ts");
+                    const { parseConfig } = await import(
+                        "../lib/helpers/config.ts"
+                    );
+                    const config = await parseConfig();
+                    const testConfig = {
+                        ...config,
+                        networking: {
+                            ...config.networking,
+                            proxy_pool: {
+                                enabled: true,
+                                rotation: "round-robin" as const,
+                                health_check: true,
+                                switch_proxy_on_limit: false,
+                                proxies: [
+                                    "http://u:p@proxy1:8080",
+                                    "http://u:p@proxy2:8080",
+                                    "http://u:p@proxy3:8080",
+                                ],
+                            },
+                        },
+                    };
+                    const fetchClient = getFetchClient(testConfig);
+
+                    // Three blocked responses on proxy1 blacklist it. proxy2 stays
+                    // unavailable via its own failing probes and proxy3 stays
+                    // unavailable unconditionally, so every one of these three
+                    // requests actually re-contacts proxy1 instead of the pool
+                    // sticking to a working alternative.
+                    await fetchClient("http://example.com/1");
+                    await fetchClient("http://example.com/2");
+                    await fetchClient("http://example.com/3");
+                    const probesBefore = probesByClient.get(1) || 0;
+
+                    // Blacklist proxy3 too, 20s after proxy1, so its 1-hour cooldown
+                    // expires 20s after proxy1's — giving us a second, independently
+                    // timed candidate to exercise the throttle against later, without
+                    // disturbing the proxy1/proxy2 state above. Re-arm the same
+                    // "fail twice, then succeed" gate on proxy2 (now playing the
+                    // stand-in role proxy1 played above) and let proxy3's probe
+                    // succeed from here on so rotateSessionEgressProxy can pin to it.
+                    now = 1_020_000;
+                    proxy2ProbeAttempts = 0;
+                    proxy3ProbeEnabled = true;
+                    await rotateSessionEgressProxy(testConfig);
+                    await fetchClient("http://example.com/p3-1");
+                    await fetchClient("http://example.com/p3-2");
+                    await fetchClient("http://example.com/p3-3");
+
+                    // proxy1's cooldown expires (proxy3's does not yet: it was
+                    // blacklisted 20s later). Five concurrent requests arrive at
+                    // once; only proxy1 is a revalidation candidate.
+                    now = 1_000_000 + 3_600_001;
+                    await Promise.all([
+                        fetchClient("http://example.com/a"),
+                        fetchClient("http://example.com/b"),
+                        fetchClient("http://example.com/c"),
+                        fetchClient("http://example.com/d"),
+                        fetchClient("http://example.com/e"),
+                    ]);
+
+                    // Exactly one cooldown probe for proxy1, not five.
+                    assertEquals(
+                        (probesByClient.get(1) || 0) - probesBefore,
+                        1,
+                    );
+                    assertEquals(requestCount >= 8, true);
+
+                    // proxy3's cooldown has now expired too (blacklisted at
+                    // 1_020_000, +1h = 4_620_000), but we're still inside the 30s
+                    // throttle window measured from the batch's revalidation run
+                    // above (which ran at now=4_600_001). A request here reaches
+                    // ensureActiveProxy -> revalidateCooldownProxies (every
+                    // fetchClient call does, unconditionally) and finds proxy3 as a
+                    // genuine candidate, yet must perform zero probes because the
+                    // throttle skips the run entirely.
+                    const probesBeforeSkip = probesByClient.get(3) || 0;
+                    now = 4_625_000;
+                    await fetchClient("http://example.com/skip-window");
+                    assertEquals(
+                        (probesByClient.get(3) || 0) - probesBeforeSkip,
+                        0,
+                    );
+
+                    // Past the 30s throttle window: the next request actually runs
+                    // revalidation and probes proxy3 exactly once, recovering it.
+                    now = 4_635_000;
+                    await fetchClient("http://example.com/after-window");
+                    assertEquals(
+                        (probesByClient.get(3) || 0) - probesBeforeSkip,
+                        1,
+                    );
                 },
-            };
-            const fetchClient = getFetchClient(testConfig);
-
-            // Three blocked responses on proxy1 blacklist it. proxy2 stays
-            // unavailable via its own failing probes and proxy3 stays
-            // unavailable unconditionally, so every one of these three
-            // requests actually re-contacts proxy1 instead of the pool
-            // sticking to a working alternative.
-            await fetchClient("http://example.com/1");
-            await fetchClient("http://example.com/2");
-            await fetchClient("http://example.com/3");
-            const probesBefore = probesByClient.get(1) || 0;
-
-            // Blacklist proxy3 too, 20s after proxy1, so its 1-hour cooldown
-            // expires 20s after proxy1's — giving us a second, independently
-            // timed candidate to exercise the throttle against later, without
-            // disturbing the proxy1/proxy2 state above. Re-arm the same
-            // "fail twice, then succeed" gate on proxy2 (now playing the
-            // stand-in role proxy1 played above) and let proxy3's probe
-            // succeed from here on so rotateSessionEgressProxy can pin to it.
-            now = 1_020_000;
-            proxy2ProbeAttempts = 0;
-            proxy3ProbeEnabled = true;
-            await rotateSessionEgressProxy(testConfig);
-            await fetchClient("http://example.com/p3-1");
-            await fetchClient("http://example.com/p3-2");
-            await fetchClient("http://example.com/p3-3");
-
-            // proxy1's cooldown expires (proxy3's does not yet: it was
-            // blacklisted 20s later). Five concurrent requests arrive at
-            // once; only proxy1 is a revalidation candidate.
-            now = 1_000_000 + 3_600_001;
-            await Promise.all([
-                fetchClient("http://example.com/a"),
-                fetchClient("http://example.com/b"),
-                fetchClient("http://example.com/c"),
-                fetchClient("http://example.com/d"),
-                fetchClient("http://example.com/e"),
-            ]);
-
-            // Exactly one cooldown probe for proxy1, not five.
-            assertEquals((probesByClient.get(1) || 0) - probesBefore, 1);
-            assertEquals(requestCount >= 8, true);
-
-            // proxy3's cooldown has now expired too (blacklisted at
-            // 1_020_000, +1h = 4_620_000), but we're still inside the 30s
-            // throttle window measured from the batch's revalidation run
-            // above (which ran at now=4_600_001). A request here reaches
-            // ensureActiveProxy -> revalidateCooldownProxies (every
-            // fetchClient call does, unconditionally) and finds proxy3 as a
-            // genuine candidate, yet must perform zero probes because the
-            // throttle skips the run entirely.
-            const probesBeforeSkip = probesByClient.get(3) || 0;
-            now = 4_625_000;
-            await fetchClient("http://example.com/skip-window");
-            assertEquals((probesByClient.get(3) || 0) - probesBeforeSkip, 0);
-
-            // Past the 30s throttle window: the next request actually runs
-            // revalidation and probes proxy3 exactly once, recovering it.
-            now = 4_635_000;
-            await fetchClient("http://example.com/after-window");
-            assertEquals((probesByClient.get(3) || 0) - probesBeforeSkip, 1);
+            );
         } finally {
             Date.now = originalDateNow;
             globalThis.fetch = originalFetch;
             Deno.createHttpClient = originalCreateHttpClient;
-            if (originalSecret === undefined) {
-                Deno.env.delete("SERVER_SECRET_KEY");
-            } else {
-                Deno.env.set("SERVER_SECRET_KEY", originalSecret);
-            }
         }
     },
 });
