@@ -331,6 +331,17 @@ if (!innertubeClientOauthEnabled) {
 // Inbound per-client throttle. Registered on companionApp only, so
 // /healthz, /readyz and /metrics on the root app stay exempt.
 if (config.server.rate_limit.enabled) {
+    if (config.server.use_unix_socket && !config.server.trust_proxy) {
+        logWarn(
+            CTX.SERVER,
+            "server.rate_limit is enabled over a Unix socket without " +
+                "server.trust_proxy: a Unix socket has no per-connection " +
+                "client address, so the per-client limiter cannot tell " +
+                "clients apart and will apply a single shared bucket to " +
+                "the whole instance unless a reverse proxy in front of it " +
+                "forwards X-Forwarded-For and trust_proxy is enabled.",
+        );
+    }
     companionApp.use(
         "*",
         rateLimit({

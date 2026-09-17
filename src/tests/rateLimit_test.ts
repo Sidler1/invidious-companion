@@ -9,6 +9,7 @@ function buildApp(
         burst: number;
         trustProxy: boolean;
         metrics?: Metrics;
+        maxBuckets?: number;
     },
     clock: { now: number },
 ) {
@@ -20,6 +21,13 @@ function buildApp(
 
 const remoteEnv = (hostname: string) => ({
     remoteAddr: { hostname, port: 12345, transport: "tcp" },
+});
+
+// Deno.UnixAddr has no `hostname`/`port` — only `transport` and `path` — so
+// this is the shape the middleware actually sees behind a Unix socket
+// listener.
+const unixEnv = (path: string) => ({
+    remoteAddr: { transport: "unix", path },
 });
 
 Deno.test("rateLimit allows up to burst requests then answers 429", async () => {
@@ -147,4 +155,69 @@ Deno.test("rateLimit counts rejections in metrics", async () => {
     await app.request("/x", {}, remoteEnv("10.0.0.1"));
     const value = (await metrics.rateLimitRejections.get()).values[0]?.value;
     assertEquals(value, 1);
+});
+
+Deno.test("rateLimit falls back to one shared bucket over a Unix socket and warns once", async () => {
+    const clock = { now: 1_000_000 };
+    const app = buildApp(
+        { requestsPerMinute: 60, burst: 1, trustProxy: false },
+        clock,
+    );
+
+    const originalWarn = console.warn;
+    const warnings: string[] = [];
+    console.warn = (...args: unknown[]) => {
+        warnings.push(args.map(String).join(" "));
+    };
+    try {
+        // Deno.UnixAddr has no hostname, so clientIpFrom cannot distinguish
+        // these two (nominally different) socket paths — both collapse into
+        // the same "unknown" bucket.
+        assertEquals(
+            (await app.request("/x", {}, unixEnv("/tmp/a.sock"))).status,
+            200,
+        );
+        assertEquals(
+            (await app.request("/x", {}, unixEnv("/tmp/b.sock"))).status,
+            429,
+        );
+        assertEquals(
+            (await app.request("/x", {}, unixEnv("/tmp/a.sock"))).status,
+            429,
+        );
+        const unknownClientWarnings = warnings.filter((w) =>
+            w.includes("shared bucket")
+        );
+        assertEquals(unknownClientWarnings.length, 1);
+    } finally {
+        console.warn = originalWarn;
+    }
+});
+
+Deno.test("rateLimit evicts the least-recently-used bucket at the size cap", async () => {
+    const clock = { now: 1_000_000 };
+    const app = buildApp(
+        { requestsPerMinute: 60, burst: 1, trustProxy: false, maxBuckets: 3 },
+        clock,
+    );
+    for (const host of ["10.0.0.1", "10.0.0.2", "10.0.0.3"]) {
+        assertEquals(
+            (await app.request("/x", {}, remoteEnv(host))).status,
+            200,
+        );
+    }
+    // A 4th distinct client, at the cap, evicts the least-recently-used
+    // bucket (10.0.0.1, never touched again after its first request).
+    assertEquals(
+        (await app.request("/x", {}, remoteEnv("10.0.0.4"))).status,
+        200,
+    );
+    // 10.0.0.1 gets a fresh burst rather than 429: with burst 1 and no time
+    // elapsed, its old (spent) bucket would still answer 429 if it had
+    // survived, so this only passes because eviction wiped it — proving
+    // the map stayed at the cap instead of growing past it.
+    assertEquals(
+        (await app.request("/x", {}, remoteEnv("10.0.0.1"))).status,
+        200,
+    );
 });
