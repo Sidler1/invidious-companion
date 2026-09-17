@@ -16,13 +16,15 @@ ARCHIVE="invidious_companion-x86_64-unknown-linux-gnu.tar.gz"
 URL="${URL:-https://github.com/Sidler1/invidious-companion/releases/download/release-master/${ARCHIVE}}"
 START_GRACE_SECONDS=3  # time to let the new process crash-loop before trusting it
 
-FOLLOW=false
-if [ "${1:-}" = "--follow" ]; then
-    FOLLOW=true
-fi
-
 log() { printf '[update] %s\n' "$*"; }
 die() { printf '[update] ERROR: %s\n' "$*" >&2; exit 1; }
+
+FOLLOW=false
+case "${1:-}" in
+    "") ;;
+    --follow) FOLLOW=true ;;
+    *) die "unknown argument: $1 (usage: ./update.sh [--follow])" ;;
+esac
 
 cd "${INSTALL_DIR}" || die "install dir ${INSTALL_DIR} not found"
 
@@ -34,8 +36,8 @@ curl -fsSL --retry 3 --retry-delay 2 -o "${WORKDIR}/${ARCHIVE}" "${URL}" \
     || die "download failed"
 
 log "validating archive"
-tar -tzf "${WORKDIR}/${ARCHIVE}" >/dev/null || die "archive is corrupt"
-tar -tzf "${WORKDIR}/${ARCHIVE}" | grep -qx "${BINARY}" \
+LISTING="$(tar -tzf "${WORKDIR}/${ARCHIVE}")" || die "archive is corrupt"
+grep -qx "${BINARY}" <<<"${LISTING}" \
     || die "archive does not contain ${BINARY}"
 tar -xzf "${WORKDIR}/${ARCHIVE}" -C "${WORKDIR}" "${BINARY}"
 chmod 0755 "${WORKDIR}/${BINARY}"
@@ -65,7 +67,8 @@ BACKUP_CREATED=false
 rollback() {
     if [ "${BACKUP_CREATED}" = true ]; then
         log "restart failed; rolling back"
-        mv -f "${BINARY}.bak" "${BINARY}"
+        mv -f "${BINARY}.bak" "${BINARY}" \
+            || die "update failed AND rollback failed; ${SERVICE} is left stopped with the new binary in place"
         systemctl restart "${SERVICE}" || true
         die "update failed, previous binary restored"
     fi
