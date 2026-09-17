@@ -31,7 +31,14 @@
 # # Inbound per-client-IP token bucket. Companion routes are reachable from
 # # end-user browsers, so this stops a single client from burning the egress
 # # IP's anti-bot budget. Exempt: /healthz, /readyz, /metrics.
-# enabled = true # env variable: SERVER_RATE_LIMIT_ENABLED
+# # Disabled by default. Only enable this when the companion actually sees
+# # real per-user client IPs: either it is exposed directly to browsers, or
+# # it sits behind a reverse proxy that forwards X-Forwarded-For together
+# # with trust_proxy = true above. Behind Invidious's default same-origin
+# # `/companion/*` proxy the companion sees only Invidious's own backend
+# # IP (that proxy does not forward X-Forwarded-For), so enabling this
+# # would rate-limit the whole instance instead of each user.
+# enabled = false # env variable: SERVER_RATE_LIMIT_ENABLED
 # requests_per_minute = 120 # env variable: SERVER_RATE_LIMIT_RPM
 # burst = 60 # env variable: SERVER_RATE_LIMIT_BURST
 

@@ -178,13 +178,17 @@ Deno.test("Config validation additions", async (t) => {
     });
 
     await t.step(
-        "inbound rate limit defaults are enabled, 120 rpm, burst 60",
+        "inbound rate limit defaults to disabled, 120 rpm, burst 60",
         async () => {
             await withTempConfig(
                 `[server]\nsecret_key = "1234567890abcdef"\n`,
                 async () => {
                     const config = await parseConfig();
-                    assertEquals(config.server.rate_limit.enabled, true);
+                    // Disabled by default: behind Invidious's default
+                    // same-origin reverse proxy the companion only sees
+                    // Invidious's own backend IP, so an enabled-by-default
+                    // per-IP limit would cap the whole instance.
+                    assertEquals(config.server.rate_limit.enabled, false);
                     assertEquals(
                         config.server.rate_limit.requests_per_minute,
                         120,
@@ -196,16 +200,22 @@ Deno.test("Config validation additions", async (t) => {
         },
     );
 
-    await t.step("inbound rate limit can be tuned via TOML", async () => {
-        await withTempConfig(
-            `[server]\nsecret_key = "1234567890abcdef"\ntrust_proxy = true\n\n[server.rate_limit]\nenabled = false\nrequests_per_minute = 30\nburst = 5\n`,
-            async () => {
-                const config = await parseConfig();
-                assertEquals(config.server.rate_limit.enabled, false);
-                assertEquals(config.server.rate_limit.requests_per_minute, 30);
-                assertEquals(config.server.rate_limit.burst, 5);
-                assertEquals(config.server.trust_proxy, true);
-            },
-        );
-    });
+    await t.step(
+        "inbound rate limit can be enabled and tuned via TOML",
+        async () => {
+            await withTempConfig(
+                `[server]\nsecret_key = "1234567890abcdef"\ntrust_proxy = true\n\n[server.rate_limit]\nenabled = true\nrequests_per_minute = 30\nburst = 5\n`,
+                async () => {
+                    const config = await parseConfig();
+                    assertEquals(config.server.rate_limit.enabled, true);
+                    assertEquals(
+                        config.server.rate_limit.requests_per_minute,
+                        30,
+                    );
+                    assertEquals(config.server.rate_limit.burst, 5);
+                    assertEquals(config.server.trust_proxy, true);
+                },
+            );
+        },
+    );
 });

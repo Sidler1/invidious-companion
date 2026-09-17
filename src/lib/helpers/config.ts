@@ -87,10 +87,16 @@ export const ConfigSchema = z.object({
         // Inbound per-client-IP token bucket. Companion routes are reachable
         // by end-user browsers (Invidious redirects to them), so an
         // unauthenticated client could otherwise burn the egress IP's
-        // anti-bot budget by enumerating video IDs.
+        // anti-bot budget by enumerating video IDs. Disabled by default:
+        // behind Invidious's default same-origin `/companion/*` reverse
+        // proxy, the companion only ever sees Invidious's own backend IP
+        // (that proxy does not forward X-Forwarded-For), so an
+        // enabled-by-default per-IP limit would cap the whole instance
+        // rather than each user. Enable only when the companion sees real
+        // client IPs — see config.example.toml / README.
         rate_limit: z.object({
             enabled: z.boolean().default(
-                Deno.env.get("SERVER_RATE_LIMIT_ENABLED") !== "false",
+                Deno.env.get("SERVER_RATE_LIMIT_ENABLED") === "true",
             ),
             requests_per_minute: z.number().int().min(1).max(100_000).default(
                 envNumber("SERVER_RATE_LIMIT_RPM") ?? 120,

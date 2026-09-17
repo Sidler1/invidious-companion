@@ -111,10 +111,19 @@ Most settings can be provided either through environment variables or `config/co
 | `SERVER_ENCRYPT_QUERY_PARAMS` | `false`                         | Enable query parameter encryption handling. |
 | `SERVER_ENABLE_METRICS`       | `false`                         | Expose `/metrics`.                          |
 | `SERVER_TRUST_PROXY`          | `false`                         | Use first `X-Forwarded-For` hop as client IP. |
-| `SERVER_RATE_LIMIT_ENABLED`   | `true`                          | Per-client inbound rate limit (429).        |
+| `SERVER_RATE_LIMIT_ENABLED`   | `false`                         | Per-client inbound rate limit (429).        |
 | `SERVER_RATE_LIMIT_RPM`       | `120`                           | Sustained requests per minute per client.   |
 | `SERVER_RATE_LIMIT_BURST`     | `60`                            | Burst allowance per client.                 |
 | `CONFIG_FILE`                 | `config/config.toml`            | Override config file location.              |
+
+`SERVER_RATE_LIMIT_ENABLED` defaults to `false` because the limiter buckets
+by client IP: enable it only when the companion actually sees real per-user
+client IPs — either it's exposed directly to browsers, or it sits behind a
+reverse proxy that forwards `X-Forwarded-For` together with
+`SERVER_TRUST_PROXY=true`. Behind Invidious's default same-origin
+`/companion/*` reverse proxy, the companion only sees Invidious's own
+backend IP (that proxy does not forward `X-Forwarded-For`), so enabling the
+limiter there would cap the whole instance's traffic instead of each user.
 
 ### Cache/networking/jobs/session
 
