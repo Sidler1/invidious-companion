@@ -114,7 +114,17 @@ export const compactLogger: MiddlewareHandler = async (c, next) => {
     const status = c.res.status;
     const duration = fmtDuration(Math.round(elapsed));
 
-    c.get("metrics")?.requestLatency.observe(elapsed / 1000);
+    const metrics = c.get("metrics");
+    if (metrics) {
+        // routePath is the matched pattern (":videoId" stays a placeholder),
+        // so label cardinality is bounded by the number of routes.
+        metrics.requestLatency
+            .labels(c.req.routePath, method, String(status))
+            .observe(elapsed / 1000);
+        if (status === 401) {
+            metrics.authFailures.inc();
+        }
+    }
 
     logInfo(
         CTX.HTTP,

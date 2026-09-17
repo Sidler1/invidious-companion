@@ -98,3 +98,25 @@ Deno.test("Metrics - registry contains all expected metrics", () => {
         );
     }
 });
+
+Deno.test("Metrics - requestLatency is labelled by route, method and status", async () => {
+    const metrics = new Metrics();
+    metrics.requestLatency.labels("/companion/latest_version", "GET", "302")
+        .observe(0.05);
+    const data = await metrics.requestLatency.get();
+    const labelled = data.values.find((v) =>
+        v.labels.route === "/companion/latest_version" &&
+        v.labels.method === "GET" && v.labels.status === "302"
+    );
+    assertExists(labelled, "expected a sample carrying the three labels");
+});
+
+Deno.test("Metrics - abuse-signal counters exist", () => {
+    const metrics = new Metrics();
+    assertExists(metrics.authFailures);
+    assertExists(metrics.verifyRequestFailures);
+    assertExists(metrics.captionsRequests);
+    assertExists(metrics.rateLimitRejections);
+    metrics.authFailures.inc();
+    metrics.captionsRequests.inc();
+});

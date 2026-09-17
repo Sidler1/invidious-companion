@@ -17,11 +17,13 @@ export class Metrics {
         name: string,
         help: string,
         buckets?: number[],
+        labelNames: string[] = [],
     ): Histogram {
         return new Histogram({
             name: `${this.METRICS_PREFIX}${name}`,
             help,
             buckets: buckets || [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10],
+            labelNames,
             registers: [this.register],
         });
     }
@@ -163,7 +165,19 @@ export class Metrics {
 
     public requestLatency = this.createHistogram(
         "request_latency_seconds",
-        "Request latency in seconds",
+        "Request latency in seconds, labelled by matched route pattern, method and status",
+        undefined,
+        ["route", "method", "status"],
+    );
+
+    public authFailures = this.createCounter(
+        "auth_failures_total",
+        "Number of responses with status 401 (bearer auth on /youtubei/v1/* and /metrics)",
+    );
+
+    public captionsRequests = this.createCounter(
+        "captions_requests_total",
+        "Number of /api/v1/captions requests that reached the player flow (each mints a PO token)",
     );
 
     private innertubeFailedRequest = this.createCounter(

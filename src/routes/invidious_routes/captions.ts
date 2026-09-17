@@ -36,6 +36,8 @@ captionsHandler.get("/:videoId", async (c) => {
     requireTokenMinter(c);
     await requireVerifiedCheck(c, videoId);
 
+    metrics?.captionsRequests.inc();
+
     const innertubeClient = c.get("innertubeClient");
 
     const youtubePlayerResponseJson = await youtubePlayerParsing({
