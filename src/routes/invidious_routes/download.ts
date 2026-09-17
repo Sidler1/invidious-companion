@@ -8,16 +8,30 @@ import {
 } from "../guards.ts";
 import type { HonoVariables } from "../../lib/types/HonoVariables.ts";
 
+// Invidious' download widget sends fixed lowercase extensions (mp4, webm,
+// m4a, vtt); anything else would be spliced into a filename / query param.
+const ExtensionSchema = z.string().regex(/^[a-z0-9]{1,5}$/);
+const MAX_TITLE_LENGTH = 256;
+
 const DownloadWidgetSchema = z.union([
-    z.object({ label: z.string(), ext: z.string() }).strict(),
-    z.object({ itag: z.number(), ext: z.string() }).strict(),
+    z.object({ label: z.string().min(1).max(256), ext: ExtensionSchema })
+        .strict(),
+    z.object({ itag: z.number().int().positive(), ext: ExtensionSchema })
+        .strict(),
 ]);
 
 type DownloadWidget = z.infer<typeof DownloadWidgetSchema>;
 
 export default function getDownloadHandler(app: Hono) {
     async function handler(c: Context<{ Variables: HonoVariables }>) {
-        const body = await c.req.formData();
+        let body: FormData;
+        try {
+            body = await c.req.formData();
+        } catch {
+            throw new HTTPException(400, {
+                res: new Response("Invalid form data."),
+            });
+        }
 
         const rawVideoId = body.get("id")?.toString();
         if (rawVideoId == undefined) {
@@ -33,7 +47,7 @@ export default function getDownloadHandler(app: Hono) {
         requireTokenMinter(c);
         await requireVerifiedCheck(c, videoId);
 
-        const title = body.get("title");
+        const title = body.get("title")?.toString();
 
         let downloadWidgetData: DownloadWidget;
 
@@ -47,9 +61,10 @@ export default function getDownloadHandler(app: Hono) {
             });
         }
 
+        const isValidTitle = !!title && title.length <= MAX_TITLE_LENGTH;
         if (
-            !(title && videoId &&
-                DownloadWidgetSchema.safeParse(downloadWidgetData).success)
+            !isValidTitle ||
+            !DownloadWidgetSchema.safeParse(downloadWidgetData).success
         ) {
             throw new HTTPException(400, {
                 res: new Response("Invalid form data required for download"),
