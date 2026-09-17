@@ -125,7 +125,7 @@ RUN --mount=type=bind,rw,source=.git,target=/app/.git \
     --mount=type=cache,target="${DENO_DIR}" \
     deno task compile
 
-FROM gcr.io/distroless/cc AS app
+FROM gcr.io/distroless/cc-debian12:latest@sha256:e5d81ddde149641e2a9ba55be4545bc125c67de07508b03ba4c22e6eb0ded5aa AS app
 
 # Copy group file for the non-privileged user from the user-stage
 COPY --from=user-stage /etc/group /etc/group
@@ -155,7 +155,9 @@ ENV SERVER_BASE_PATH=/companion \
     THC_VERSION="${THC_VERSION}" \
     TINI_VERSION="${TINI_VERSION}"
 
-COPY ./config/ ./config/
+# Only the example ships in the image; the real config is mounted at runtime
+# (see docker-compose.yaml) so secrets never land in an image layer.
+COPY ./config/config.example.toml ./config/config.example.toml
 
 # Switch to non-privileged user
 USER appuser

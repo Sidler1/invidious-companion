@@ -1,3 +1,5 @@
 invidious_companion
 test_things/
+config/config.toml
 config/local.toml
+.env

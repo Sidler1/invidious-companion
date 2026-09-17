@@ -1,10 +1,13 @@
-version: "3"
 services:
   invidious_companion:
     build:
       context: .
       dockerfile: Dockerfile
     # image: quay.io/invidious/invidious-companion:latest
+    environment:
+      # 16 alphanumeric characters; put it in .env (see .env.example) or export
+      # it in the shell. Compose refuses to start without it.
+      SERVER_SECRET_KEY: ${SERVER_SECRET_KEY:?set SERVER_SECRET_KEY (16 alphanumeric chars) in .env or the environment}
     ports:
       - 127.0.0.1:8282:8282
     restart: unless-stopped
@@ -12,8 +15,11 @@ services:
       - ALL
     read_only: true
     user: 10001:10001
-    # cache for youtube library
     volumes:
+      # cache for youtube library
       - /var/tmp/youtubei.js:/var/tmp/youtubei.js:rw
+      # optional TOML overrides; create it with
+      #   cp config/config.example.toml config/config.toml
+      - ./config/config.toml:/app/config/config.toml:ro
     security_opt:
       - no-new-privileges:true
