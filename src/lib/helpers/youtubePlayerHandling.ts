@@ -54,8 +54,16 @@ export function trimPlayerResponse(
 }
 
 // Tracks in-progress upstream player fetches so concurrent requests for the
-// same videoId share a single YouTube round-trip instead of stampeding.
+// same videoId AND session generation share a single YouTube round-trip
+// instead of stampeding. Keyed by generation too: during a session
+// regeneration a caller on the new generation must not be handed (or have
+// its result attributed to) an in-flight fetch started under the old one —
+// that fetch's deciphered URLs embed the old session's PO token/egress IP.
 const inFlightPlayerRequests = new Map<string, Promise<object>>();
+
+function inFlightKey(cacheGeneration: number, videoId: string): string {
+    return `${cacheGeneration}:${videoId}`;
+}
 
 async function decipherIfPlayable(
     innertubeClient: Innertube,
@@ -125,11 +133,12 @@ export const youtubePlayerParsing = async ({
     }
 
     // Single-flight: collapse concurrent cache-miss fetches for the same
-    // videoId into one upstream request. Skipped for overrideCache (a forced
-    // fresh fetch, e.g. PO-token validation), which must not reuse a shared
-    // result.
+    // videoId AND generation into one upstream request. Skipped for
+    // overrideCache (a forced fresh fetch, e.g. PO-token validation), which
+    // must not reuse a shared result.
+    const flightKey = inFlightKey(cacheGeneration, videoId);
     if (!overrideCache) {
-        const existing = inFlightPlayerRequests.get(videoId);
+        const existing = inFlightPlayerRequests.get(flightKey);
         if (existing) return existing;
     }
 
@@ -179,11 +188,11 @@ export const youtubePlayerParsing = async ({
     }
 
     const fetchPromise = fetchFresh();
-    inFlightPlayerRequests.set(videoId, fetchPromise);
+    inFlightPlayerRequests.set(flightKey, fetchPromise);
     try {
         return await fetchPromise;
     } finally {
-        inFlightPlayerRequests.delete(videoId);
+        inFlightPlayerRequests.delete(flightKey);
     }
 };
 
