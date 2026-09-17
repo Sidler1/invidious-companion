@@ -1,13 +1,27 @@
 import { Hono } from "hono";
-import { youtubePlayerParsing } from "../../lib/helpers/youtubePlayerHandling.ts";
 import { HTTPException } from "hono/http-exception";
-import { validateVideoId } from "../../lib/helpers/validateVideoId.ts";
+import { z } from "zod";
+import type { HonoVariables } from "../../lib/types/HonoVariables.ts";
+import { youtubePlayerParsing } from "../../lib/helpers/youtubePlayerHandling.ts";
+import { requireValidVideoId } from "../guards.ts";
 import { TOKEN_MINTER_NOT_READY_MESSAGE } from "../../constants.ts";
 
-const player = new Hono();
+// Invidious sends `{ "videoId": "<id>" }`; extra keys are tolerated.
+const PlayerBodySchema = z.object({ videoId: z.string().min(1) })
+    .passthrough();
+
+const player = new Hono<{ Variables: HonoVariables }>();
 
 player.post("/player", async (c) => {
-    const jsonReq = await c.req.json();
+    let rawBody: unknown;
+    try {
+        rawBody = await c.req.json();
+    } catch {
+        throw new HTTPException(400, {
+            res: new Response("Invalid JSON body."),
+        });
+    }
+
     const innertubeClient = c.get("innertubeClient");
     const config = c.get("config");
     const metrics = c.get("metrics");
@@ -33,26 +47,24 @@ player.post("/player", async (c) => {
         });
     }
 
-    if (jsonReq.videoId) {
-        if (!validateVideoId(jsonReq.videoId)) {
-            throw new HTTPException(400, {
-                res: new Response("Invalid video ID format."),
-            });
-        }
-        return c.json(
-            await youtubePlayerParsing({
-                innertubeClient,
-                videoId: jsonReq.videoId,
-                config,
-                tokenMinter: tokenMinter!,
-                metrics,
-            }),
-        );
+    const parsed = PlayerBodySchema.safeParse(rawBody);
+    if (!parsed.success) {
+        throw new HTTPException(400, {
+            res: new Response("Missing videoId in request body."),
+        });
     }
+    const videoId = requireValidVideoId(parsed.data.videoId);
 
-    throw new HTTPException(400, {
-        res: new Response("Missing videoId in request body."),
-    });
+    return c.json(
+        await youtubePlayerParsing({
+            innertubeClient,
+            videoId,
+            config,
+            tokenMinter: tokenMinter!,
+            metrics,
+            cacheGeneration: c.get("sessionGeneration"),
+        }),
+    );
 });
 
 export default player;

@@ -12,6 +12,7 @@ import {
     requireValidVideoId,
     requireVerifiedCheck,
 } from "../guards.ts";
+import { getPlayabilityStatus } from "../../lib/helpers/playability.ts";
 
 interface AvailableCaption {
     label: string;
@@ -46,7 +47,14 @@ captionsHandler.get("/:videoId", async (c) => {
         config,
         metrics,
         tokenMinter: tokenMinter!,
+        cacheGeneration: c.get("sessionGeneration"),
     });
+
+    // An ERROR response has no captions, and youtubeVideoInfo() would throw
+    // (YouTube.js v18) — answer 404 like the "no caption tracks" case below.
+    if (getPlayabilityStatus(youtubePlayerResponseJson).status === "ERROR") {
+        throw new HTTPException(404);
+    }
 
     const videoInfo = youtubeVideoInfo(
         innertubeClient,

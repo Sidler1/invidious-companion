@@ -11,6 +11,7 @@ import {
     requireValidVideoId,
     requireVerifiedCheck,
 } from "../guards.ts";
+import { assertPlayable } from "../../lib/helpers/playability.ts";
 import type { HonoVariables } from "../../lib/types/HonoVariables.ts";
 
 const PRIVATE_PARAM_NAMES = ["pot", "ip"];
@@ -36,22 +37,22 @@ dashManifest.get("/:videoId", async (c) => {
         config,
         tokenMinter: tokenMinter!,
         metrics,
+        cacheGeneration: c.get("sessionGeneration"),
     });
+    // Must precede youtubeVideoInfo(): YouTube.js v18 throws for ERROR.
+    assertPlayable(videoId, youtubePlayerResponseJson);
     const videoInfo = youtubeVideoInfo(
         innertubeClient,
         youtubePlayerResponseJson,
     );
 
-    if (videoInfo.playability_status?.status !== "OK") {
-        throw new HTTPException(403, {
-            res: new Response(
-                "The video can't be played: " + videoId + " due to reason: " +
-                    videoInfo.playability_status?.reason,
-            ),
+    c.header("content-type", "application/dash+xml");
+
+    if (!videoInfo.streaming_data) {
+        throw new HTTPException(404, {
+            res: new Response("No streaming data available."),
         });
     }
-
-    c.header("content-type", "application/dash+xml");
 
     if (videoInfo.streaming_data) {
         // video.js only support MP4 not WEBM

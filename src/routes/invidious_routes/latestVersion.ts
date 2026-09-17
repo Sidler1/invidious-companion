@@ -10,6 +10,7 @@ import {
     requireValidVideoId,
     requireVerifiedCheck,
 } from "../guards.ts";
+import { assertPlayable } from "../../lib/helpers/playability.ts";
 import type { HonoVariables } from "../../lib/types/HonoVariables.ts";
 
 const PRIVATE_PARAM_NAMES = ["pot", "ip"];
@@ -42,20 +43,14 @@ latestVersion.get("/", async (c) => {
         config,
         tokenMinter: tokenMinter!,
         metrics,
+        cacheGeneration: c.get("sessionGeneration"),
     });
+    // Must precede youtubeVideoInfo(): YouTube.js v18 throws for ERROR.
+    assertPlayable(videoId, youtubePlayerResponseJson);
     const videoInfo = youtubeVideoInfo(
         innertubeClient,
         youtubePlayerResponseJson,
     );
-
-    if (videoInfo.playability_status?.status !== "OK") {
-        throw new HTTPException(403, {
-            res: new Response(
-                "The video can't be played: " + videoId + " due to reason: " +
-                    videoInfo.playability_status?.reason,
-            ),
-        });
-    }
     const streamingData = videoInfo.streaming_data;
     const availableFormats = streamingData?.formats.concat(
         streamingData.adaptive_formats,
