@@ -78,6 +78,8 @@ const innertubeClientCookies = config.youtube_session.cookies;
 const sharedState = {
     _client: null as Innertube | null,
     _minter: undefined as TokenMinter | undefined,
+    // Incremented on every set(); see HonoVariables.sessionGeneration.
+    _generation: 0,
 
     getClient(): Innertube {
         return this._client ?? innertubeClient;
@@ -88,9 +90,13 @@ const sharedState = {
         // module-level minter.
         return this._client ? this._minter : tokenMinter;
     },
+    getGeneration(): number {
+        return this._generation;
+    },
     set(client: Innertube, minter: TokenMinter | undefined): void {
         this._client = client;
         this._minter = minter;
+        this._generation++;
     },
 };
 
@@ -333,6 +339,7 @@ companionApp.use("*", async (c, next) => {
     c.set("config", config);
     c.set("metrics", metrics);
     c.set("lastMintOkMs", lifecycle.lastMintOkMs);
+    c.set("sessionGeneration", sharedState.getGeneration());
     await next();
 });
 companionRoutes(companionApp, config, metrics);
@@ -346,6 +353,7 @@ app.use("*", async (c, next) => {
     c.set("config", config);
     c.set("metrics", metrics);
     c.set("lastMintOkMs", lifecycle.lastMintOkMs);
+    c.set("sessionGeneration", sharedState.getGeneration());
     await next();
 });
 miscRoutes(app, config);
