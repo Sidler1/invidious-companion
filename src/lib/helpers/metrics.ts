@@ -136,6 +136,11 @@ export class Metrics {
         "Number of session regenerations triggered proactively by a detected YouTube block",
     );
 
+    public verifyRequestFailures = this.createCounter(
+        "verify_request_failures_total",
+        "Number of requests rejected because the check parameter was missing or invalid",
+    );
+
     public mintTimeouts = this.createCounter(
         "mint_timeouts_total",
         "Number of per-video content-token mints that hit the mint timeout",

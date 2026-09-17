@@ -1,6 +1,5 @@
 import { Hono } from "hono";
 import type { HonoVariables } from "../../lib/types/HonoVariables.ts";
-import { verifyRequest } from "../../lib/helpers/verifyRequest.ts";
 import {
     youtubePlayerParsing,
     youtubeVideoInfo,
@@ -8,8 +7,11 @@ import {
 import type { CaptionTrackData } from "youtubei.js/PlayerCaptionsTracklist";
 import { handleTranscripts } from "../../lib/helpers/youtubeTranscriptsHandling.ts";
 import { HTTPException } from "hono/http-exception";
-import { validateVideoId } from "../../lib/helpers/validateVideoId.ts";
-import { TOKEN_MINTER_NOT_READY_MESSAGE } from "../../constants.ts";
+import {
+    requireTokenMinter,
+    requireValidVideoId,
+    requireVerifiedCheck,
+} from "../guards.ts";
 
 interface AvailableCaption {
     label: string;
@@ -19,18 +21,10 @@ interface AvailableCaption {
 
 const captionsHandler = new Hono<{ Variables: HonoVariables }>();
 captionsHandler.get("/:videoId", async (c) => {
-    const { videoId } = c.req.param();
+    const videoId = requireValidVideoId(c.req.param("videoId"));
     const config = c.get("config");
     const metrics = c.get("metrics");
     const tokenMinter = c.get("tokenMinter");
-
-    const check = c.req.query("check");
-
-    if (!validateVideoId(videoId)) {
-        throw new HTTPException(400, {
-            res: new Response("Invalid video ID format."),
-        });
-    }
 
     // Fail early if captions are disabled by the administrator.
     if (!config.captions.enabled) {
@@ -39,24 +33,8 @@ captionsHandler.get("/:videoId", async (c) => {
         });
     }
 
-    // Check if tokenMinter is ready (only needed when PO token is enabled)
-    if (config.jobs.youtube_session.po_token_enabled && !tokenMinter) {
-        throw new HTTPException(503, {
-            res: new Response(TOKEN_MINTER_NOT_READY_MESSAGE),
-        });
-    }
-
-    if (config.server.verify_requests && check == undefined) {
-        throw new HTTPException(400, {
-            res: new Response("No check ID."),
-        });
-    } else if (config.server.verify_requests && check) {
-        if (await verifyRequest(check, videoId, config) === false) {
-            throw new HTTPException(400, {
-                res: new Response("ID incorrect."),
-            });
-        }
-    }
+    requireTokenMinter(c);
+    await requireVerifiedCheck(c, videoId);
 
     const innertubeClient = c.get("innertubeClient");
 

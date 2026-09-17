@@ -4,19 +4,22 @@ import {
     youtubePlayerParsing,
     youtubeVideoInfo,
 } from "../../lib/helpers/youtubePlayerHandling.ts";
-import { verifyRequest } from "../../lib/helpers/verifyRequest.ts";
 import { HTTPException } from "hono/http-exception";
 import { encryptQuery } from "../../lib/helpers/encryptQuery.ts";
-import { validateVideoId } from "../../lib/helpers/validateVideoId.ts";
-import { TOKEN_MINTER_NOT_READY_MESSAGE } from "../../constants.ts";
+import {
+    requireTokenMinter,
+    requireValidVideoId,
+    requireVerifiedCheck,
+} from "../guards.ts";
+import type { HonoVariables } from "../../lib/types/HonoVariables.ts";
 
 const PRIVATE_PARAM_NAMES = ["pot", "ip"];
 
-const dashManifest = new Hono();
+const dashManifest = new Hono<{ Variables: HonoVariables }>();
 
 dashManifest.get("/:videoId", async (c) => {
-    const { videoId } = c.req.param();
-    const { check, local } = c.req.query();
+    const videoId = requireValidVideoId(c.req.param("videoId"));
+    const { local } = c.req.query();
     c.header("access-control-allow-origin", "*");
 
     const innertubeClient = c.get("innertubeClient");
@@ -24,30 +27,8 @@ dashManifest.get("/:videoId", async (c) => {
     const metrics = c.get("metrics");
     const tokenMinter = c.get("tokenMinter");
 
-    // Check if tokenMinter is ready (only needed when PO token is enabled)
-    if (config.jobs.youtube_session.po_token_enabled && !tokenMinter) {
-        throw new HTTPException(503, {
-            res: new Response(TOKEN_MINTER_NOT_READY_MESSAGE),
-        });
-    }
-
-    if (!validateVideoId(videoId)) {
-        throw new HTTPException(400, {
-            res: new Response("Invalid video ID format."),
-        });
-    }
-
-    if (config.server.verify_requests && check == undefined) {
-        throw new HTTPException(400, {
-            res: new Response("No check ID."),
-        });
-    } else if (config.server.verify_requests && check) {
-        if (await verifyRequest(check, videoId, config) === false) {
-            throw new HTTPException(400, {
-                res: new Response("ID incorrect."),
-            });
-        }
-    }
+    requireTokenMinter(c);
+    await requireVerifiedCheck(c, videoId);
 
     const youtubePlayerResponseJson = await youtubePlayerParsing({
         innertubeClient,

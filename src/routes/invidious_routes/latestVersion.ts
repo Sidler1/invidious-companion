@@ -4,17 +4,20 @@ import {
     youtubePlayerParsing,
     youtubeVideoInfo,
 } from "../../lib/helpers/youtubePlayerHandling.ts";
-import { verifyRequest } from "../../lib/helpers/verifyRequest.ts";
 import { encryptQuery } from "../../lib/helpers/encryptQuery.ts";
-import { validateVideoId } from "../../lib/helpers/validateVideoId.ts";
-import { TOKEN_MINTER_NOT_READY_MESSAGE } from "../../constants.ts";
+import {
+    requireTokenMinter,
+    requireValidVideoId,
+    requireVerifiedCheck,
+} from "../guards.ts";
+import type { HonoVariables } from "../../lib/types/HonoVariables.ts";
 
 const PRIVATE_PARAM_NAMES = ["pot", "ip"];
 
-const latestVersion = new Hono();
+const latestVersion = new Hono<{ Variables: HonoVariables }>();
 
 latestVersion.get("/", async (c) => {
-    const { check, itag, id, local, title } = c.req.query();
+    const { itag, id, local, title } = c.req.query();
     c.header("access-control-allow-origin", "*");
 
     if (!id || !itag) {
@@ -23,39 +26,19 @@ latestVersion.get("/", async (c) => {
         });
     }
 
-    if (!validateVideoId(id)) {
-        throw new HTTPException(400, {
-            res: new Response("Invalid video ID format."),
-        });
-    }
+    const videoId = requireValidVideoId(id);
 
     const innertubeClient = c.get("innertubeClient");
     const config = c.get("config");
     const metrics = c.get("metrics");
     const tokenMinter = c.get("tokenMinter");
 
-    // Check if tokenMinter is ready (only needed when PO token is enabled)
-    if (config.jobs.youtube_session.po_token_enabled && !tokenMinter) {
-        throw new HTTPException(503, {
-            res: new Response(TOKEN_MINTER_NOT_READY_MESSAGE),
-        });
-    }
-
-    if (config.server.verify_requests && check == undefined) {
-        throw new HTTPException(400, {
-            res: new Response("No check ID."),
-        });
-    } else if (config.server.verify_requests && check) {
-        if (await verifyRequest(check, id, config) === false) {
-            throw new HTTPException(400, {
-                res: new Response("ID incorrect."),
-            });
-        }
-    }
+    requireTokenMinter(c);
+    await requireVerifiedCheck(c, videoId);
 
     const youtubePlayerResponseJson = await youtubePlayerParsing({
         innertubeClient,
-        videoId: id,
+        videoId,
         config,
         tokenMinter: tokenMinter!,
         metrics,
@@ -68,7 +51,7 @@ latestVersion.get("/", async (c) => {
     if (videoInfo.playability_status?.status !== "OK") {
         throw new HTTPException(403, {
             res: new Response(
-                "The video can't be played: " + id + " due to reason: " +
+                "The video can't be played: " + videoId + " due to reason: " +
                     videoInfo.playability_status?.reason,
             ),
         });
@@ -82,7 +65,7 @@ latestVersion.get("/", async (c) => {
     // response, surfacing as an opaque "context not finalized" 500.
     if (!availableFormats) {
         throw new HTTPException(500, {
-            res: new Response("No streaming data available for: " + id),
+            res: new Response("No streaming data available for: " + videoId),
         });
     }
 

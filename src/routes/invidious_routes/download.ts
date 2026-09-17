@@ -1,8 +1,12 @@
 import type { Context, Hono } from "hono";
 import { z } from "zod";
 import { HTTPException } from "hono/http-exception";
-import { verifyRequest } from "../../lib/helpers/verifyRequest.ts";
-import { validateVideoId } from "../../lib/helpers/validateVideoId.ts";
+import {
+    requireTokenMinter,
+    requireValidVideoId,
+    requireVerifiedCheck,
+} from "../guards.ts";
+import type { HonoVariables } from "../../lib/types/HonoVariables.ts";
 
 const DownloadWidgetSchema = z.union([
     z.object({ label: z.string(), ext: z.string() }).strict(),
@@ -12,37 +16,22 @@ const DownloadWidgetSchema = z.union([
 type DownloadWidget = z.infer<typeof DownloadWidgetSchema>;
 
 export default function getDownloadHandler(app: Hono) {
-    async function handler(c: Context) {
+    async function handler(c: Context<{ Variables: HonoVariables }>) {
         const body = await c.req.formData();
 
-        const videoId = body.get("id")?.toString();
-        if (videoId == undefined) {
+        const rawVideoId = body.get("id")?.toString();
+        if (rawVideoId == undefined) {
             throw new HTTPException(400, {
                 res: new Response("Please specify the video ID"),
             });
         }
-
-        if (!validateVideoId(videoId)) {
-            throw new HTTPException(400, {
-                res: new Response("Invalid video ID format."),
-            });
-        }
+        const videoId = requireValidVideoId(rawVideoId);
 
         const config = c.get("config");
-
         const check = c.req.query("check");
 
-        if (config.server.verify_requests && check == undefined) {
-            throw new HTTPException(400, {
-                res: new Response("No check ID."),
-            });
-        } else if (config.server.verify_requests && check) {
-            if (await verifyRequest(check, videoId, config) === false) {
-                throw new HTTPException(400, {
-                    res: new Response("ID incorrect."),
-                });
-            }
-        }
+        requireTokenMinter(c);
+        await requireVerifiedCheck(c, videoId);
 
         const title = body.get("title");
 
