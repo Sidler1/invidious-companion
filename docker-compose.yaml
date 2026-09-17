@@ -18,8 +18,16 @@ services:
     volumes:
       # cache for youtube library
       - /var/tmp/youtubei.js:/var/tmp/youtubei.js:rw
-      # optional TOML overrides; create it with
+      # TOML overrides. The file must exist before the first `docker compose up`
+      # (a plain copy of the example is enough):
       #   cp config/config.example.toml config/config.toml
-      - ./config/config.toml:/app/config/config.toml:ro
+      # create_host_path: false makes compose fail with a clear error instead of
+      # silently creating an empty directory when the file is missing.
+      - type: bind
+        source: ./config/config.toml
+        target: /app/config/config.toml
+        read_only: true
+        bind:
+          create_host_path: false
     security_opt:
       - no-new-privileges:true
