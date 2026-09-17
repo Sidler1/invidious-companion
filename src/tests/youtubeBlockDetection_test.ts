@@ -27,7 +27,7 @@ function lazyResponse(chunks: Uint8Array[]): Response {
 }
 
 function withDeadline<T>(promise: Promise<T>, label: string): Promise<T> {
-    let timer: number | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     const deadline = new Promise<never>((_, reject) => {
         timer = setTimeout(
             () => reject(new Error(`${label} did not settle within 2s`)),
