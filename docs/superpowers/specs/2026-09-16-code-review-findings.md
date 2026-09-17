@@ -219,7 +219,8 @@ redirects with `enc=true&data=`.
 **Required:** `formData()` in try/catch → 400 `"Invalid form data."`; Zod:
 `title` max 256 chars; itag branch `ext` matches `/^[a-z0-9]{1,5}$/`; label
 branch `ext` is bounded to 64 characters (Invidious sends `<languageCode>.vtt`
-and the value is unused downstream); remove dead code.
+and the value is unused downstream); remove dead code. Request bodies on
+`POST /download` are capped at 64 KiB, answering 413 on overflow.
 
 ### C8 — LOW — Access logger bypasses `LOG_LEVEL`; redaction list gaps
 `compactLogger.ts:107,118` uses `console.log`; `redactSensitive.ts:8-16` omits
