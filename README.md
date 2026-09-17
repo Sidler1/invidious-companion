@@ -30,10 +30,37 @@ Useful external docs:
 
 - Main runtime entry: `src/main.ts`
     - Started by `deno task dev`
-    - Compiled by `deno task compile` into `./invidious_companion`
+    - Compiled by `deno task compile` (→ `scripts/compile.sh`) into `./invidious_companion`
 - Route registration: `src/routes/index.ts`
     - Companion routes are served under `server.base_path` (default: `/companion`)
-    - Misc routes include `/healthz` and optional `/metrics`
+    - Misc routes are served at the root: `/healthz`, `/readyz` and optional `/metrics`
+
+## Endpoints
+
+Root (no base path):
+
+| Method | Path       | Auth                                  | Purpose                                                                          |
+|--------|------------|----------------------------------------|-----------------------------------------------------------------------------------|
+| GET    | `/healthz` | none                                   | Liveness; always `200`.                                                          |
+| GET    | `/readyz`  | none                                   | Readiness JSON; `503` until config, Innertube client and PO-token minter are up. |
+| GET    | `/metrics` | `Authorization: Bearer <secret_key>`   | Prometheus metrics; only mounted when `SERVER_ENABLE_METRICS=true`.              |
+
+Under `server.base_path` (default `/companion`). When `SERVER_RATE_LIMIT_ENABLED`
+is on, any of these can also answer `429` (`Too many requests.`) before reaching
+its handler:
+
+| Method | Path                            | Auth                                            | Purpose                                                                                                                       |
+|--------|----------------------------------|--------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------|
+| POST   | `/youtubei/v1/player`           | `Authorization: Bearer <secret_key>`             | Player response for Invidious. `400` on invalid JSON body ("Invalid JSON body.") or missing `videoId` ("Missing videoId in request body."). |
+| GET    | `/latest_version`               | `check` when `SERVER_VERIFY_REQUESTS`            | Redirect to a stream URL by `id` + `itag`. `400` on invalid/missing `id`/`itag`; `503` while the PO-token minter isn't ready. |
+| POST   | `/download`                     | `check` when `SERVER_VERIFY_REQUESTS`            | Download widget dispatcher (captions or stream); internally re-issues to `/api/v1/captions` or `/latest_version`.            |
+| GET    | `/api/manifest/dash/id/:id`     | `check` when `SERVER_VERIFY_REQUESTS`            | DASH manifest. `404` ("No streaming data available.") when the video has none.                                              |
+| GET    | `/api/v1/captions/:id`          | `check` when `SERVER_VERIFY_REQUESTS`            | Caption list, or one track as `text/vtt` (`label`/`lang`). `503` when `CAPTIONS_ENABLED=false`; `404` when playability is `ERROR` or no matching track exists. |
+| GET    | `/videoplayback`                | `enc`/`data` when `SERVER_ENCRYPT_QUERY_PARAMS`  | Streams bytes from `googlevideo.com` with `Range` passthrough; rejects non-`googlevideo.com` hosts and expired URLs.        |
+
+`/latest_version`, `/download`, `/api/manifest/dash/id/:id` and `/api/v1/captions/:id`
+also answer `503` (the same `TOKEN_MINTER_NOT_READY_MESSAGE`) while the PO-token
+minter is still bootstrapping, when `jobs.youtube_session.po_token_enabled` is on.
 
 ## Requirements
 
@@ -72,8 +99,19 @@ Produces `./invidious_companion` in the repository root.
 ### 4) Docker (optional)
 
 ```bash
+cp .env.example .env                                  # then edit SERVER_SECRET_KEY
+cp config/config.example.toml config/config.toml      # required before first `docker compose up`
 docker compose up -d
 ```
+
+`config/config.toml` must exist before the first `docker compose up`: the
+compose file bind-mounts it with `create_host_path: false`, so a missing file
+fails the mount loudly instead of silently mounting an empty directory. A
+plain copy of the example is enough to start; edit it afterwards for TOML
+overrides. Compose also refuses to start when `SERVER_SECRET_KEY` is unset —
+put it in `.env` (see `.env.example`) or export it in the shell. Both
+`config/config.toml` and `.env` are excluded from the image (`.dockerignore`);
+only `config/config.example.toml` is copied in.
 
 > If your Docker installation only supports legacy syntax, use `docker-compose up -d`.
 
@@ -90,7 +128,10 @@ Defined in `deno.json`:
 
 ## Environment Variables
 
-Most settings can be provided either through environment variables or `config/config.toml`.
+Every setting can be provided through `config/config.toml` (see
+`config/config.example.toml`) or through the environment variable listed here.
+TOML values take precedence over environment variables. The table is derived
+from the Zod schema in `src/lib/helpers/config.ts`.
 
 ### Required
 
@@ -98,23 +139,24 @@ Most settings can be provided either through environment variables or `config/co
 |---------------------|-------------------------------------------------------|
 | `SERVER_SECRET_KEY` | Required. Must be exactly 16 alphanumeric characters. |
 
-### Common server/runtime
+### Server
 
-| Variable                      | Default                         | Description                                 |
-|-------------------------------|---------------------------------|---------------------------------------------|
-| `PORT`                        | `8282`                          | HTTP port (when not using Unix socket).     |
-| `HOST`                        | `127.0.0.1`                     | HTTP bind host.                             |
-| `SERVER_USE_UNIX_SOCKET`      | `false`                         | Listen on Unix socket instead of TCP.       |
-| `SERVER_UNIX_SOCKET_PATH`     | `/tmp/invidious-companion.sock` | Unix socket path.                           |
-| `SERVER_BASE_PATH`            | `/companion`                    | Base route prefix for companion endpoints.  |
-| `SERVER_VERIFY_REQUESTS`      | `false`                         | Enable request verification behavior.       |
-| `SERVER_ENCRYPT_QUERY_PARAMS` | `false`                         | Enable query parameter encryption handling. |
-| `SERVER_ENABLE_METRICS`       | `false`                         | Expose `/metrics`.                          |
-| `SERVER_TRUST_PROXY`          | `false`                         | Use first `X-Forwarded-For` hop as client IP. |
-| `SERVER_RATE_LIMIT_ENABLED`   | `false`                         | Per-client inbound rate limit (429).        |
-| `SERVER_RATE_LIMIT_RPM`       | `120`                           | Sustained requests per minute per client.   |
-| `SERVER_RATE_LIMIT_BURST`     | `60`                            | Burst allowance per client.                 |
-| `CONFIG_FILE`                 | `config/config.toml`            | Override config file location.              |
+| Variable                      | Default                         | Description                                                                      |
+|--------------------------------|----------------------------------|-------------------------------------------------------------------------------------|
+| `PORT`                        | `8282`                          | HTTP port (when not using Unix socket).                                          |
+| `HOST`                        | `127.0.0.1`                     | HTTP bind host.                                                                   |
+| `SERVER_USE_UNIX_SOCKET`      | `false`                         | Listen on Unix socket instead of TCP.                                            |
+| `SERVER_UNIX_SOCKET_PATH`     | `/tmp/invidious-companion.sock` | Unix socket path.                                                                 |
+| `SERVER_BASE_PATH`            | `/companion`                    | Base route prefix for companion endpoints.                                       |
+| `SERVER_VERIFY_REQUESTS`      | `false`                         | Require a signed `check` param on Invidious-facing routes.                       |
+| `SERVER_ENCRYPT_QUERY_PARAMS` | `false`                         | Encrypt `pot`/`ip` in `/videoplayback` URLs (`enc=true&data=`).                   |
+| `SERVER_ENABLE_METRICS`       | `false`                         | Expose `/metrics` (bearer-protected with `SERVER_SECRET_KEY`).                    |
+| `SERVER_TRUST_PROXY`          | `false`                         | Trust the first `X-Forwarded-For` hop for client identification (rate limiting). Only enable behind a reverse proxy you control. |
+| `SERVER_RATE_LIMIT_ENABLED`   | `false`                         | Per-client-IP inbound token-bucket limiter on companion routes (`429 Too many requests.`). |
+| `SERVER_RATE_LIMIT_RPM`       | `120`                           | Sustained requests per minute per client (bucket refill rate).                   |
+| `SERVER_RATE_LIMIT_BURST`     | `60`                            | Burst allowance (bucket size) per client.                                        |
+| `CONFIG_FILE`                 | `config/config.toml`            | Override config file location.                                                    |
+| `LOG_LEVEL`                   | `info`                          | `debug`, `info`, `warn` or `error`.                                               |
 
 `SERVER_RATE_LIMIT_ENABLED` defaults to `false` because the limiter buckets
 by client IP: enable it only when the companion actually sees real per-user
@@ -125,40 +167,61 @@ reverse proxy that forwards `X-Forwarded-For` together with
 backend IP (that proxy does not forward `X-Forwarded-For`), so enabling the
 limiter there would cap the whole instance's traffic instead of each user.
 
-### Cache/networking/jobs/session
+### Captions
 
-| Variable                                             | Default       |
-|------------------------------------------------------|---------------|
-| `CACHE_ENABLED`                                      | `true`        |
-| `CACHE_DIRECTORY`                                    | `/var/tmp`    |
-| `CACHE_TTL_SECONDS`                                  | `3600`        |
-| `PROXY`                                              | `null`        |
-| `NETWORKING_IPV6_BLOCK`                              | `null`        |
-| `NETWORKING_FETCH_TIMEOUT_MS`                        | `30000`       |
-| `NETWORKING_FETCH_RETRY_ENABLED`                     | `false`       |
-| `NETWORKING_FETCH_RETRY_TIMES`                       | `1`           |
-| `NETWORKING_FETCH_RETRY_INITIAL_DEBOUNCE`            | `0`           |
-| `NETWORKING_FETCH_RETRY_DEBOUNCE_MULTIPLIER`         | `0`           |
-| `CACHE_NEGATIVE_TTL_SECONDS`                         | `30`          |
-| `NETWORKING_RATE_LIMIT_ENABLED`                      | `true`        |
-| `NETWORKING_RATE_LIMIT_MAX_CONCURRENT`               | `8`           |
-| `NETWORKING_RATE_LIMIT_MIN_INTERVAL_MS`              | `0`           |
-| `NETWORKING_PROXY_POOL_SWITCH_ON_LIMIT`              | `false`       |
-| `NETWORKING_VIDEOPLAYBACK_UMP`                       | `false`       |
-| `JOBS_YOUTUBE_SESSION_PO_TOKEN_ENABLED`              | `true`        |
-| `JOBS_YOUTUBE_SESSION_FREQUENCY`                     | `*/5 * * * *` |
-| `JOBS_YOUTUBE_SESSION_LIFETIME_HOURS`                | `6`           |
-| `YOUTUBE_SESSION_OAUTH_ENABLED`                      | `false`       |
-| `YOUTUBE_SESSION_COOKIES`                            | `""`          |
-| `YOUTUBE_SESSION_PLAYER_ID`                          | `""`          |
-| `YOUTUBE_SESSION_GL`                                 | `""`          |
-| `YOUTUBE_SESSION_HL`                                 | `""`          |
+| Variable           | Default | Description                                                                                       |
+|--------------------|---------|-----------------------------------------------------------------------------------------------------|
+| `CAPTIONS_ENABLED` | `true`  | Set to `false` to answer `/api/v1/captions` with `503` (each caption fetch consumes a PO token). |
 
-Additional runtime variable used by startup/import logic:
+### Cache
 
-| Variable                    | Description                                                                                    |
-|-----------------------------|------------------------------------------------------------------------------------------------|
-| `GET_FETCH_CLIENT_LOCATION` | Overrides module location for `getFetchClient` import in `src/main.ts` (advanced/debug usage). |
+| Variable                     | Default    | Description                                                                                                            |
+|-------------------------------|------------|----------------------------------------------------------------------------------------------------------------------------|
+| `CACHE_ENABLED`              | `true`     | Cache deciphered player responses in Deno KV.                                                                          |
+| `CACHE_DIRECTORY`            | `/var/tmp` | KV store lives at `<dir>/youtubei.js/kv_cache.sqlite3`.                                                                |
+| `CACHE_TTL_SECONDS`          | `3600`     | Positive cache TTL in seconds (max `21600` / 6h — matches the ~6h `expire` window on deciphered googlevideo URLs).     |
+| `CACHE_NEGATIVE_TTL_SECONDS` | `30`       | TTL for non-OK (`ERROR`/unplayable) player responses; `0` disables.                                                    |
+
+### Networking
+
+| Variable                                     | Default | Description                                                                                                              |
+|-------------------------------------------------|---------|------------------------------------------------------------------------------------------------------------------------------|
+| `PROXY`                                      | `null`  | Single egress proxy URL (http/https/socks4/socks5).                                                                     |
+| `NETWORKING_IPV6_BLOCK`                      | `null`  | IPv6 block for per-request source-address rotation.                                                                     |
+| `NETWORKING_FETCH_TIMEOUT_MS`                | `30000` | Upstream fetch timeout in ms (1000–300000).                                                                             |
+| `NETWORKING_FETCH_RETRY_ENABLED`             | `false` | Retry upstream fetches with exponential backoff.                                                                        |
+| `NETWORKING_FETCH_RETRY_TIMES`               | `1`     | Max retries (1–10).                                                                                                      |
+| `NETWORKING_FETCH_RETRY_INITIAL_DEBOUNCE`    | `0`     | First retry delay (ms).                                                                                                  |
+| `NETWORKING_FETCH_RETRY_DEBOUNCE_MULTIPLIER` | `0`     | Backoff multiplier.                                                                                                      |
+| `NETWORKING_VIDEOPLAYBACK_UMP`               | `false` | Enable YouTube's UMP video format.                                                                                       |
+| `NETWORKING_RATE_LIMIT_ENABLED`              | `true`  | Cap outbound concurrency to YouTube per egress IP (per proxy when pooled).                                              |
+| `NETWORKING_RATE_LIMIT_MAX_CONCURRENT`       | `8`     | Max simultaneous in-flight upstream requests (per egress IP when pooled).                                               |
+| `NETWORKING_RATE_LIMIT_MIN_INTERVAL_MS`      | `0`     | Minimum spacing between request starts (`0` = no spacing).                                                              |
+| `NETWORKING_PROXY_POOL_SWITCH_ON_LIMIT`      | `false` | Hop to another pool proxy when the active one's rate-limit gate is saturated; requires `NETWORKING_RATE_LIMIT_ENABLED`. |
+
+`[networking.proxy_pool]` (`enabled`, `rotation`, `health_check`, `proxies`) is
+**TOML-only**; there is no environment variable for the proxy list.
+
+### Jobs / YouTube session
+
+| Variable                                       | Default                     | Description                                                             |
+|-----------------------------------------------------|----------------------------------|-------------------------------------------------------------------------------|
+| `JOBS_YOUTUBE_SESSION_PO_TOKEN_ENABLED`        | `true`                       | Generate PO tokens with BotGuard.                                       |
+| `JOBS_YOUTUBE_SESSION_FREQUENCY`               | `*/5 * * * *`                | Cron that checks whether the session needs regenerating.                |
+| `JOBS_YOUTUBE_SESSION_LIFETIME_HOURS`          | `6`                          | Keep a session this long before re-attesting; `0` = every tick.         |
+| `JOBS_YOUTUBE_SESSION_PLAYER_FALLBACK_CLIENTS` | `TV_SIMPLY,MWEB,ANDROID_VR`  | Comma-separated Innertube clients tried when WEB has no stream URLs.    |
+| `YOUTUBE_SESSION_OAUTH_ENABLED`                | `false`                      | Use OAuth instead of PO tokens.                                         |
+| `YOUTUBE_SESSION_COOKIES`                      | `""`                         | Cookie header for the Innertube session.                                |
+| `YOUTUBE_SESSION_PLAYER_ID`                    | `""`                         | Pin a specific player JS id.                                            |
+| `YOUTUBE_SESSION_GL`                           | `""`                         | Region (e.g. `US`); match the egress country.                          |
+| `YOUTUBE_SESSION_HL`                           | `""`                         | Language (e.g. `en`).                                                   |
+
+### Advanced / debugging
+
+| Variable                    | Description                                                                              |
+|-------------------------------|------------------------------------------------------------------------------------------------|
+| `GET_FETCH_CLIENT_LOCATION` | Overrides the module location of `getFetchClient` (allow-listed internal paths only).    |
+| `YT_PLAYER_REQ_LOCATION`    | Overrides the module location of `youtubePlayerReq` (allow-listed internal paths only).  |
 
 ### Anti-blocking notes
 
@@ -203,17 +266,25 @@ Additional runtime variable used by startup/import logic:
 
 ## Tests
 
-Run the full suite:
+Run the full suite (`DENO_JOBS=1` and every permission flag are part of the task):
 
 ```bash
-deno task test
+SERVER_SECRET_KEY=aaaaaaaaaaaaaaaa deno task test
 ```
 
-Typical targeted test run while iterating:
+`src/tests/main_test.ts` boots the real server and talks to YouTube; everything
+else is network-free. To run only the unit tests, or a single file, pass the
+paths to the task (extra arguments are appended to `deno test`):
 
 ```bash
-deno test src/tests/<file> --allow-import=github.com:443,jsr.io:443,cdn.jsdelivr.net:443,esm.sh:443,deno.land:443 --allow-net --allow-env --allow-sys=hostname --allow-read=.,/var/tmp/youtubei.js,/tmp/invidious-companion.sock --allow-write=/var/tmp/youtubei.js
+deno task test --ignore=src/tests/main_test.ts   # unit tests only
+deno task test src/tests/verifyRequest_test.ts   # one file
 ```
+
+Tests that need environment variables or a config file use
+`src/tests/helpers/env.ts` (`withEnv`, `withTempConfig`) so nothing leaks
+between files, and `src/tests/helpers/testConfig.ts` (`makeTestConfig`) to
+build a fully-defaulted `Config` without touching the filesystem or env vars.
 
 ## Project Structure
 
@@ -221,12 +292,20 @@ deno test src/tests/<file> --allow-import=github.com:443,jsr.io:443,cdn.jsdelivr
 .
 ├── config/
 │   └── config.example.toml
+├── scripts/
+│   └── compile.sh
 ├── src/
 │   ├── main.ts
 │   ├── constants.ts
 │   ├── routes/
 │   │   ├── index.ts
+│   │   ├── guards.ts
+│   │   ├── errorHandler.ts
+│   │   ├── rateLimit.ts
+│   │   ├── compactLogger.ts
+│   │   ├── metricsAuthFailureCounter.ts
 │   │   ├── health.ts
+│   │   ├── readiness.ts
 │   │   ├── metrics.ts
 │   │   ├── videoPlaybackProxy.ts
 │   │   ├── invidious_routes/
@@ -234,12 +313,16 @@ deno test src/tests/<file> --allow-import=github.com:443,jsr.io:443,cdn.jsdelivr
 │   ├── lib/
 │   │   ├── helpers/
 │   │   ├── jobs/
+│   │   ├── session/
 │   │   └── types/
 │   └── tests/
+│       └── helpers/
 ├── deno.json
 ├── deno.lock
 ├── Dockerfile
-└── docker-compose.yaml
+├── docker-compose.yaml
+├── .dockerignore
+└── .env.example
 ```
 
 ## License
