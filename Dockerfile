@@ -116,6 +116,7 @@ COPY deno.lock ./
 COPY deno.json ./
 
 COPY ./src/ ./src/
+COPY ./scripts/ ./scripts/
 
 # To let the `deno task compile` know the current commit on which
 # Invidious companion is being built, similar to how Invidious does it.
