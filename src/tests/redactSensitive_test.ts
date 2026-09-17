@@ -41,6 +41,16 @@ Deno.test("Redaction - redactUrl", async (t) => {
         assertEquals(result.includes("secret123"), false);
         assertEquals(result.includes("[REDACTED]"), true);
     });
+
+    await t.step("redacts ip, data and cookies params", () => {
+        const url =
+            "https://example.com/videoplayback?ip=203.0.113.7&data=Zm9v&cookies=a%3Db&itag=18";
+        const result = redactUrl(url);
+        assertEquals(result.includes("203.0.113.7"), false);
+        assertEquals(result.includes("Zm9v"), false);
+        assertEquals(result.includes("a%3Db"), false);
+        assertEquals(result.includes("itag=18"), true);
+    });
 });
 
 Deno.test("Redaction - redactString", async (t) => {
@@ -71,4 +81,13 @@ Deno.test("Redaction - redactString", async (t) => {
         const result = redactString(str);
         assertEquals(result, str);
     });
+
+    await t.step(
+        "preserves a trailing delimiter after a redacted value",
+        () => {
+            const str = "error (https://x/y?pot=SECRET)";
+            const result = redactString(str);
+            assertEquals(result, "error (https://x/y?pot=[REDACTED])");
+        },
+    );
 });

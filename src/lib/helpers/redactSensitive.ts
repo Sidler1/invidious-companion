@@ -13,6 +13,11 @@ const SENSITIVE_PARAM_NAMES = [
     "pot",
     "sig",
     "signature",
+    // Egress IP bound into googlevideo URLs (latestVersion.ts PRIVATE_PARAM_NAMES).
+    "ip",
+    // Encrypted pot/ip blob on /videoplayback?enc=true.
+    "data",
+    "cookies",
 ];
 
 const BEARER_PATTERN = /Bearer\s+\S+/gi;
@@ -26,7 +31,7 @@ export function redactUrl(urlStr: string): string {
     let result = urlStr;
     for (const param of SENSITIVE_PARAM_NAMES) {
         const paramPattern = new RegExp(
-            `([?&])${param}=[^&]*`,
+            `([?&])${param}=[^&\\s)'"]*`,
             "gi",
         );
         result = result.replace(paramPattern, `$1${param}=[REDACTED]`);
@@ -47,7 +52,7 @@ export function redactString(str: string): string {
     // Redact query param values for known sensitive names
     for (const param of SENSITIVE_PARAM_NAMES) {
         const paramPattern = new RegExp(
-            `([?&])${param}=[^&\\s]*`,
+            `([?&])${param}=[^&\\s)'"]*`,
             "gi",
         );
         result = result.replace(paramPattern, `$1${param}=[REDACTED]`);

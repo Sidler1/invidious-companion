@@ -24,6 +24,7 @@
 
 import type { MiddlewareHandler } from "hono";
 import { redactUrl } from "../lib/helpers/redactSensitive.ts";
+import { CTX, logInfo } from "../lib/helpers/log.ts";
 
 /**
  * Extract a short, meaningful summary from a URL.
@@ -104,7 +105,7 @@ export const compactLogger: MiddlewareHandler = async (c, next) => {
     const summary = summarizeUrl(c.req.url);
 
     // Incoming request
-    console.log(`<-- ${method.padEnd(5)} ${summary}`);
+    logInfo(CTX.HTTP, `<-- ${method.padEnd(5)} ${summary}`);
 
     const start = performance.now();
     await next();
@@ -115,5 +116,8 @@ export const compactLogger: MiddlewareHandler = async (c, next) => {
 
     c.get("metrics")?.requestLatency.observe(elapsed / 1000);
 
-    console.log(`--> ${method.padEnd(5)} ${summary} ${status} ${duration}`);
+    logInfo(
+        CTX.HTTP,
+        `--> ${method.padEnd(5)} ${summary} ${status} ${duration}`,
+    );
 };

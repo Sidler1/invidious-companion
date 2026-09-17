@@ -101,6 +101,7 @@ export function logDebug(context: string, message: string): void {
 // Standardized context tags used across the codebase
 export const CTX = {
     SERVER: "SERVER",
+    HTTP: "HTTP",
     PROXY: "PROXY",
     CACHE: "CACHE",
     PO_TOKEN: "PO-TOKEN",
