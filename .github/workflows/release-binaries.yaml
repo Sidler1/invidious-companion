@@ -8,7 +8,7 @@ on:
 
 jobs:
   verify:
-    name: Format, type-check, lint
+    name: Verify (static checks + unit tests)
     runs-on: ubuntu-latest
     steps:
       - name: Setup repo
