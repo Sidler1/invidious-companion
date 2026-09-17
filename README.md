@@ -66,6 +66,7 @@ minter is still bootstrapping, when `jobs.youtube_session.po_token_enabled` is o
 
 - Deno (project tasks are defined in `deno.json`)
 - Git (used by `deno task compile` to inject version metadata)
+- Bash (`deno task compile` runs `scripts/compile.sh`)
 - Optional: Docker / Docker Compose for containerized deployment
 
 ## Setup & Run

@@ -11,6 +11,11 @@ OUTPUT="${COMPILE_OUTPUT:-invidious_companion}"
 VERSION_DATE="$(git log -1 --format=%ci | awk '{print $1}' | sed s/-/./g)"
 VERSION_COMMIT="$(git rev-list HEAD --max-count=1 --abbrev-commit)"
 
+# --allow-read below is deliberately unrestricted (matches the Docker image's
+# runtime permissions): CONFIG_FILE and CACHE_DIRECTORY are operator-
+# configurable to arbitrary paths outside the working directory, so a
+# narrower list here breaks those on the release binaries built from this
+# script.
 exec deno compile \
     --include ./src/lib/helpers/youtubePlayerReq.ts \
     --include ./src/lib/helpers/getFetchClient.ts \
