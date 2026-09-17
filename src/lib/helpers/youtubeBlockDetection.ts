@@ -19,10 +19,14 @@ async function bodyHasBlockSignal(response: Response): Promise<boolean> {
         const reader = cloned.body?.getReader();
         if (!reader) return false;
         const { value } = await reader.read();
-        // Cancelling releases the lock too; releaseLock() alone would leave
-        // the tee'd branch's source (and thus the underlying stream) unread
-        // and unclosed.
-        await reader.cancel();
+        // Cancel this tee branch so no further chunks are buffered for it,
+        // but do NOT await it: a tee branch's cancel() only settles once the
+        // other branch (the caller's original body) has been drained, and the
+        // caller reads that body only after we return. Awaiting here
+        // deadlocks on any body larger than one chunk (real YouTube
+        // responses), which left the process with no pending work and
+        // "Top-level await promise never resolved" at startup.
+        reader.cancel().catch(() => {});
         if (!value) return false;
         const text = new TextDecoder().decode(value.slice(0, 8192))
             .toLowerCase();
