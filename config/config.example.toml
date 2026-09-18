@@ -38,6 +38,13 @@
 # # `/companion/*` proxy the companion sees only Invidious's own backend
 # # IP (that proxy does not forward X-Forwarded-For), so enabling this
 # # would rate-limit the whole instance instead of each user.
+# # Note on sizing: even in the supported setups above, the limiter keys on
+# # the client IP, so every server-to-server request from the paired
+# # Invidious backend (its /api/v1/videos player POSTs to this companion)
+# # arrives from ONE source IP and shares a single bucket. Size
+# # requests_per_minute (and burst) for the whole instance's combined
+# # player traffic, not for a single end user — otherwise you throttle
+# # your own frontend.
 # enabled = false # env variable: SERVER_RATE_LIMIT_ENABLED
 # requests_per_minute = 120 # env variable: SERVER_RATE_LIMIT_RPM
 # burst = 60 # env variable: SERVER_RATE_LIMIT_BURST
