@@ -356,4 +356,71 @@ Deno.test("videoPlaybackProxy", async (t) => {
             assertEquals(calls.length, 0);
         });
     });
+
+    // Invidious' download widget round-trips a filename through the `title`
+    // query param: download.ts builds "<title>-<id>.<ext>", latestVersion.ts
+    // appends it to the redirect, and this proxy is the only place that can
+    // turn it into a Content-Disposition. Without the header the browser
+    // plays the video inline instead of saving it.
+    await t.step(
+        "sets Content-Disposition from title, with an RFC 5987 filename*",
+        async () => {
+            await withProxyApp(() => videoResponse(), async (app) => {
+                const title = `M\u00f6tley Cr\u00fce's "Song" (live).mp4`;
+                const res = await app.request(
+                    `/videoplayback?host=${GV_A}&c=WEB&expire=${futureExpire()}&id=abc&title=${
+                        encodeURIComponent(title)
+                    }`,
+                );
+                assertEquals(res.status, 200);
+                assertEquals(
+                    res.headers.get("content-disposition"),
+                    'attachment; filename="M%C3%B6tley%20Cr%C3%BCe\'s%20%22Song%22%20(live).mp4"; ' +
+                        "filename*=UTF-8''M%C3%B6tley%20Cr%C3%BCe%27s%20%22Song%22%20%28live%29.mp4",
+                );
+            });
+        },
+    );
+
+    await t.step(
+        "omits Content-Disposition when no title is given",
+        async () => {
+            await withProxyApp(() => videoResponse(), async (app) => {
+                const res = await app.request(
+                    `/videoplayback?host=${GV_A}&c=WEB&expire=${futureExpire()}&id=abc`,
+                );
+                assertEquals(res.status, 200);
+                assertEquals(res.headers.get("content-disposition"), null);
+            });
+        },
+    );
+
+    // A seeking client sends Range; the filename must survive on the 206 too,
+    // or a resumed download loses its name.
+    await t.step(
+        "sets Content-Disposition on a 206 range response as well",
+        async () => {
+            await withProxyApp(
+                () =>
+                    new Response("partial", {
+                        status: 206,
+                        headers: {
+                            "content-type": "video/mp4",
+                            "content-range": "bytes 0-6/11",
+                        },
+                    }),
+                async (app) => {
+                    const res = await app.request(
+                        `/videoplayback?host=${GV_A}&c=WEB&expire=${futureExpire()}&id=abc&title=clip.mp4`,
+                        { headers: { range: "bytes=0-6" } },
+                    );
+                    assertEquals(res.status, 206);
+                    assertEquals(
+                        res.headers.get("content-disposition"),
+                        `attachment; filename="clip.mp4"; filename*=UTF-8''clip.mp4`,
+                    );
+                },
+            );
+        },
+    );
 });
