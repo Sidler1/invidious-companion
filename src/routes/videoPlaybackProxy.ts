@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { USER_AGENT } from "bgutils";
 import { decryptQuery } from "../lib/helpers/encryptQuery.ts";
+import { encodeRFC5987ValueChars } from "../lib/helpers/encodeRFC5987ValueChars.ts";
 import type { Config } from "../lib/helpers/config.ts";
 import type { FetchFn } from "../lib/helpers/fetchShim.ts";
 import {
@@ -154,7 +155,7 @@ async function fetchFollowingRedirects(
  * - Redirects are followed manually (max 5) and only to googlevideo hosts.
  */
 videoPlaybackProxy.get("/", async (c) => {
-    const { host, c: client, expire } = c.req.query();
+    const { host, c: client, expire, title } = c.req.query();
     const urlReq = new URL(c.req.url);
     const config = c.get("config") as Config;
     c.get("metrics")?.videoPlaybackRequests.inc();
@@ -220,6 +221,18 @@ videoPlaybackProxy.get("/", async (c) => {
     const contentLength = ytRes.headers.get("content-length");
     if (contentLength) {
         responseHeaders["content-length"] = contentLength;
+    }
+
+    // Invidious' download widget reaches this route via POST /download ->
+    // /latest_version, which carries the intended filename in `title`. This
+    // is the only place that can turn it into a save-as filename; without
+    // the header the browser plays the file inline instead of downloading
+    // it. `filename*` (RFC 5987) carries the non-ASCII form, `filename` the
+    // ASCII fallback for clients that ignore it.
+    if (title) {
+        responseHeaders["content-disposition"] = `attachment; filename="${
+            encodeURIComponent(title)
+        }"; filename*=UTF-8''${encodeRFC5987ValueChars(title)}`;
     }
 
     if (ytRes.status === 206) {
