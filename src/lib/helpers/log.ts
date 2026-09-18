@@ -107,8 +107,6 @@ export const CTX = {
     PO_TOKEN: "PO-TOKEN",
     OAUTH: "OAUTH",
     PLAYER: "PLAYER",
-    VIDEO: "VIDEO",
-    DASH: "DASH",
     CAPTIONS: "CAPTIONS",
     CONFIG: "CONFIG",
     ENCRYPT: "ENCRYPT",
