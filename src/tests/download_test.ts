@@ -7,13 +7,17 @@ import type { TokenMinter } from "../lib/jobs/potoken.ts";
 import type { Config } from "../lib/helpers/config.ts";
 import { makeTestConfig } from "./helpers/testConfig.ts";
 import { makeCheck } from "./helpers/check.ts";
+import type { ContentfulStatusCode } from "hono/utils/http-status";
 
 const VIDEO_ID = "jNQXAC9IVRw";
 const DOWNLOAD_MAX_BODY_BYTES = 64 * 1024;
 const stubMinter =
     ((_videoId: string) => Promise.resolve("pot")) as unknown as TokenMinter;
 
-function buildApp(config: Config = makeTestConfig()) {
+function buildApp(
+    config: Config = makeTestConfig(),
+    captionsStatus: ContentfulStatusCode = 200,
+) {
     const app = new Hono<{ Variables: HonoVariables }>();
     app.use("*", async (c, next) => {
         c.set("config", config);
@@ -23,12 +27,16 @@ function buildApp(config: Config = makeTestConfig()) {
     });
     // Stub the sibling routes the dispatcher forwards to; echo what they got,
     // including the forwarded `check` (when present) so tests can assert it
-    // was passed through unchanged.
+    // was passed through unchanged. The full query string is echoed in a
+    // header so a test can assert the dispatcher adds nothing the real
+    // captions route could key off — see the <track> guard below.
     app.get(
         "/companion/api/v1/captions/:videoId",
         (c) => {
             const check = c.req.query("check");
             const suffix = check ? ` check=${check}` : "";
+            c.header("x-test-captions-query", new URL(c.req.url).search);
+            c.status(captionsStatus);
             return c.text(
                 `captions ${c.req.param("videoId")} ${
                     c.req.query("label")
@@ -214,4 +222,74 @@ Deno.test("download forwards a verified check to the latest_version route", asyn
     assert(body.startsWith("latest ?"));
     const params = new URLSearchParams(body.slice("latest ".length));
     assertEquals(params.get("check"), check);
+});
+
+// POST /download on the label branch is answered by an in-process sub-request
+// to the captions route, whose response the dispatcher returns verbatim. The
+// captions route also serves the player's <track> element, so it must NOT set
+// Content-Disposition itself — the dispatcher adds it on the way out instead.
+Deno.test("download serves a caption as a named attachment", async () => {
+    const app = buildApp();
+    const res = await app.request(formRequest({
+        id: VIDEO_ID,
+        title: "My Video",
+        download_widget: JSON.stringify({ label: "English", ext: "en.vtt" }),
+    }));
+    assertEquals(res.status, 200);
+    assertEquals(
+        res.headers.get("content-disposition"),
+        `attachment; filename="My%20Video-${VIDEO_ID}.en.vtt"; ` +
+            `filename*=UTF-8''My%20Video-${VIDEO_ID}.en.vtt`,
+    );
+    // The body must still be the captions route's, untouched.
+    assertEquals(await res.text(), `captions ${VIDEO_ID} English`);
+});
+
+Deno.test("download escapes a caption filename per RFC 5987", async () => {
+    const app = buildApp();
+    const res = await app.request(formRequest({
+        id: VIDEO_ID,
+        title: "Ünsere Show (live)",
+        download_widget: JSON.stringify({
+            label: "Deutsch",
+            ext: "de.vtt",
+        }),
+    }));
+    assertEquals(res.status, 200);
+    assertEquals(
+        res.headers.get("content-disposition"),
+        `attachment; filename="%C3%9Cnsere%20Show%20(live)-${VIDEO_ID}.de.vtt"; ` +
+            `filename*=UTF-8''%C3%9Cnsere%20Show%20%28live%29-${VIDEO_ID}.de.vtt`,
+    );
+});
+
+// An error from the captions route is not a file; serving a 404 body as a
+// download would save the error text under the caption's name.
+Deno.test("download does not attach a failed caption response", async () => {
+    const app = buildApp(makeTestConfig(), 404);
+    const res = await app.request(formRequest({
+        id: VIDEO_ID,
+        title: "My Video",
+        download_widget: JSON.stringify({ label: "English", ext: "en.vtt" }),
+    }));
+    assertEquals(res.status, 404);
+    assertEquals(res.headers.get("content-disposition"), null);
+});
+
+// The <track> guard. The captions route is shared with the player, so the
+// only way this change could reach it is by introducing a parameter it might
+// key off. Assert the sub-request query is still exactly what it was.
+Deno.test("download adds no parameter to the captions sub-request", async () => {
+    const app = buildApp();
+    const res = await app.request(formRequest({
+        id: VIDEO_ID,
+        title: "My Video",
+        download_widget: JSON.stringify({ label: "English", ext: "en.vtt" }),
+    }));
+    assertEquals(res.status, 200);
+    const query = new URLSearchParams(
+        res.headers.get("x-test-captions-query") ?? "",
+    );
+    assertEquals([...query.keys()], ["label"]);
+    assertEquals(query.get("label"), "English");
 });
