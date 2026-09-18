@@ -24,7 +24,7 @@ Useful external docs:
 - **Language/runtime:** TypeScript on [Deno](https://docs.deno.com/runtime/)
 - **HTTP framework:** [Hono](https://hono.dev/)
 - **Primary integrations/libraries:** `youtubei.js`, `prom-client`, Zod (`zod`) for config validation
-- **Package/dependency management:** Deno modules via `deno.json` imports + `deno.lock`
+- **Package/dependency management:** Deno modules via `deno.jsonc` imports + `deno.lock`
 
 ## Entry Points
 
@@ -64,7 +64,7 @@ minter is still bootstrapping, when `jobs.youtube_session.po_token_enabled` is o
 
 ## Requirements
 
-- Deno (project tasks are defined in `deno.json`)
+- Deno (project tasks are defined in `deno.jsonc`)
 - Git (used by `deno task compile` to inject version metadata)
 - Bash (`deno task compile` runs `scripts/compile.sh`)
 - Optional: Docker / Docker Compose for containerized deployment
@@ -118,7 +118,7 @@ only `config/config.example.toml` is copied in.
 
 ## Scripts (Deno tasks)
 
-Defined in `deno.json`:
+Defined in `deno.jsonc`:
 
 - `deno task dev` — run `src/main.ts` in watch mode with required runtime permissions.
 - `deno task compile` — compile `src/main.ts` to `invidious_companion` and inject git version metadata.
@@ -318,7 +318,7 @@ build a fully-defaulted `Config` without touching the filesystem or env vars.
 │   │   └── types/
 │   └── tests/
 │       └── helpers/
-├── deno.json
+├── deno.jsonc
 ├── deno.lock
 ├── Dockerfile
 ├── docker-compose.yaml
