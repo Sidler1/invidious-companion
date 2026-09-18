@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { USER_AGENT } from "bgutils";
 import { decryptQuery } from "../lib/helpers/encryptQuery.ts";
-import { encodeRFC5987ValueChars } from "../lib/helpers/encodeRFC5987ValueChars.ts";
+import { attachmentContentDisposition } from "../lib/helpers/contentDisposition.ts";
 import type { Config } from "../lib/helpers/config.ts";
 import type { FetchFn } from "../lib/helpers/fetchShim.ts";
 import {
@@ -230,9 +230,9 @@ videoPlaybackProxy.get("/", async (c) => {
     // it. `filename*` (RFC 5987) carries the non-ASCII form, `filename` the
     // ASCII fallback for clients that ignore it.
     if (title) {
-        responseHeaders["content-disposition"] = `attachment; filename="${
-            encodeURIComponent(title)
-        }"; filename*=UTF-8''${encodeRFC5987ValueChars(title)}`;
+        responseHeaders["content-disposition"] = attachmentContentDisposition(
+            title,
+        );
     }
 
     if (ytRes.status === 206) {

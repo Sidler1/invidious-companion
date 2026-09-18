@@ -7,6 +7,7 @@ import {
     requireVerifiedCheck,
 } from "../guards.ts";
 import type { HonoVariables } from "../../lib/types/HonoVariables.ts";
+import { attachmentContentDisposition } from "../../lib/helpers/contentDisposition.ts";
 
 // Invidious' download widget sends, for the itag branch, a mime subtype
 // (mp4, webm, m4a) that gets spliced into a filename / query param, so it's
@@ -81,9 +82,30 @@ export default function getDownloadHandler(app: Hono) {
             // Forward the check param so the internal captions request also
             // passes verifyRequest when verify_requests is enabled.
             if (check) captionsQuery.set("check", check);
-            return await app.request(
+            const captionsResponse = await app.request(
                 `${config.server.base_path}/api/v1/captions/${videoId}?${captionsQuery.toString()}`,
             );
+            // The captions route is shared with the player's <track> element,
+            // so it must not mark its own response as an attachment. Add the
+            // header here instead, where we know the request came from the
+            // download widget — which is also the only place that knows the
+            // filename, since `ext` ("<lang>.vtt") never reaches that route.
+            // Only a successful response is a file; a 404 body is not.
+            if (!captionsResponse.ok) {
+                return captionsResponse;
+            }
+            const headers = new Headers(captionsResponse.headers);
+            headers.set(
+                "content-disposition",
+                attachmentContentDisposition(
+                    `${title}-${videoId}.${downloadWidgetData.ext}`,
+                ),
+            );
+            return new Response(captionsResponse.body, {
+                status: captionsResponse.status,
+                statusText: captionsResponse.statusText,
+                headers,
+            });
         } else {
             const itag = downloadWidgetData.itag;
             const ext = downloadWidgetData.ext;
