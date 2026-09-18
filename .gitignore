@@ -45,5 +45,6 @@ config/config.toml
 # Temporary files
 *.zip
 
-# Claude Code project guidance (local, not tracked)
+# Claude Code project guidance and local agent config (not tracked)
 CLAUDE.md
+/.claude/
